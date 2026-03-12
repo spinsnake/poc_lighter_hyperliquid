@@ -1,0 +1,11 @@
+# Core analysis stack used by the notebooks
+numpy>=1.26
+pandas>=2.2
+matplotlib>=3.8
+requests>=2.31
+websockets>=15,<16
+pyarrow>=18,<22
+
+# Notebook runtime
+ipykernel>=6.29
+jupyterlab>=4.2

@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+.ipynb_checkpoints/
+
+data/
+logs/
+
+ocr_tiles/
+Arbitrage_ocr.png
+
+*.log
