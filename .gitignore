@@ -14,3 +14,4 @@ Arbitrage_ocr.png
 
 *.log
 config.yaml
+.env

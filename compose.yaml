@@ -1,0 +1,24 @@
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: poc-lighter-hyperliquid
+    restart: unless-stopped
+    environment:
+      RUN_REFERENCE_ON_START: "1"
+      ALL_SHARED: "1"
+      WRITE_R2: "1"
+      WRITE_RAW: "0"
+      FLUSH_SEC: "1"
+      HYPERLIQUID_POLL_SEC: "1"
+      PARQUET_BATCH_SEC: "60"
+      TRADE_AGGREGATE_SEC: "1"
+      PARQUET_COMPRESSION: "zstd"
+      DURATION_SEC: "0"
+      SYMBOLS: ""
+      EXTRA_ARGS: ""
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config.yaml:/app/config.yaml:ro
