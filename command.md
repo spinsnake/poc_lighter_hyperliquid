@@ -15,6 +15,18 @@
 - `parquet-batch-sec = 60`
 - ไม่เขียน raw JSONL ถ้าไม่ได้ใส่ `-WriteRaw`
 
+### เก็บทุก shared symbols และอัปโหลด processed outputs ขึ้น R2
+
+```powershell
+.\start_live_collect.ps1 -WriteR2
+```
+
+ก่อนรัน:
+
+- ใส่ค่าใน `config.yaml` ให้ครบ
+- ต้องมี `data\reference\shared_markets_latest.csv`
+- ถ้ายังไม่มี ให้รัน `.\.venv\Scripts\python.exe -m src.collectors.non_live.collect_reference_data`
+
 ### เก็บเฉพาะ 20 เหรียญที่แนะนำ
 
 ```powershell
@@ -94,3 +106,30 @@ Stop-Process -Id $run.pid
 - `data/raw/lighter/ws/...`
 - `data/raw/hyperliquid/ws/...`
 - `data/raw/hyperliquid/rest/live_info/...`
+
+## test R2 ที่ local
+
+### ติดตั้ง dependency เพิ่ม
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### ใส่ค่าใน `config.yaml`
+
+- `r2.account_id`
+- `r2.access_key_id`
+- `r2.secret_access_key`
+- `r2.endpoint_url`
+
+### test อ่าน bucket
+
+```powershell
+.\.venv\Scripts\python.exe -m src.storage.test_r2_connection
+```
+
+### test upload object เล็ก ๆ แล้วลบทิ้ง
+
+```powershell
+.\.venv\Scripts\python.exe -m src.storage.test_r2_connection --upload-test --cleanup
+```

@@ -39,6 +39,7 @@ Background launcher, defaulting to all shared symbols with:
 - `hyperliquid-poll-sec = 1`
 - `parquet-batch-sec = 60`
 - raw writes disabled by default
+- R2 uploads disabled by default
 
 ```powershell
 .\start_live_collect.ps1
@@ -55,6 +56,25 @@ Enable raw JSONL writes only when needed for debugging:
 ```powershell
 .\start_live_collect.ps1 -Symbols BTC,ETH,SOL -DurationSec 1800 -WriteRaw
 ```
+
+Enable Cloudflare R2 uploads for processed outputs:
+
+```powershell
+.\start_live_collect.ps1 -WriteR2
+```
+
+Or directly in foreground:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.collectors.live.collect_all_live --all-shared --duration-sec 300 --write-r2
+```
+
+The collector uploads only processed outputs in the current POC flow:
+
+- `processed/live/funding_snapshots/...parquet`
+- `processed/live/book_snapshots/...parquet`
+- `processed/live/trade_aggregates/...parquet`
+- `processed/live_*latest.csv`
 
 ## Output
 

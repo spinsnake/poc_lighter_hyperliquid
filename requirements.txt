@@ -5,6 +5,8 @@ matplotlib>=3.8
 requests>=2.31
 websockets>=15,<16
 pyarrow>=18,<22
+boto3>=1.39
+PyYAML>=6.0
 
 # Notebook runtime
 ipykernel>=6.29

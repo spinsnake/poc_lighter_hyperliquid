@@ -1,0 +1,13 @@
+r2:
+  bucket: fundingrate
+  account_id: YOUR_CLOUDFLARE_ACCOUNT_ID
+  access_key_id: YOUR_R2_ACCESS_KEY_ID
+  secret_access_key: YOUR_R2_SECRET_ACCESS_KEY
+  endpoint_url: https://YOUR_CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com
+  region_name: auto
+  remote_prefix: poc_lighter_hyperliquid
+
+storage:
+  local_data_root: data
+  upload_processed_only: true
+

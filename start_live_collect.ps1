@@ -5,7 +5,9 @@ param(
     [int]$FlushSec = 1,
     [int]$HyperliquidPollSec = 1,
     [int]$ParquetBatchSec = 60,
-    [switch]$WriteRaw
+    [switch]$WriteRaw,
+    [switch]$WriteR2,
+    [string]$R2Config = "config.yaml"
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,6 +67,10 @@ if ($WriteRaw.IsPresent) {
     $Arguments += "--write-raw"
 }
 
+if ($WriteR2.IsPresent) {
+    $Arguments += @("--write-r2", "--r2-config", "`"$R2Config`"")
+}
+
 $Process = Start-Process `
     -FilePath $PythonExe `
     -ArgumentList ($Arguments -join " ") `
@@ -82,6 +88,8 @@ $RunInfo = [ordered]@{
     hyperliquid_poll_sec = $HyperliquidPollSec
     parquet_batch_sec = $ParquetBatchSec
     write_raw = $WriteRaw.IsPresent
+    write_r2 = $WriteR2.IsPresent
+    r2_config = $R2Config
     stdout_log = $StdoutLog
     stderr_log = $StderrLog
 }

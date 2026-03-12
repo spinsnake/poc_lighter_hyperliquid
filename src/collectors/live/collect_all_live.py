@@ -22,6 +22,8 @@ from src.collectors.non_live.common import (
     write_csv,
 )
 from src.collectors.non_live.hyperliquid_public import fetch_meta_and_asset_ctxs, fetch_predicted_fundings
+from src.storage.r2_config import load_config
+from src.storage.r2_uploader import R2Uploader
 
 
 LIGHTER_WS_URL = "wss://mainnet.zklighter.elliot.ai/stream"
@@ -97,6 +99,16 @@ def parse_args() -> argparse.Namespace:
         "--write-raw",
         action="store_true",
         help="Also write raw websocket and REST payloads to JSONL for debugging.",
+    )
+    parser.add_argument(
+        "--write-r2",
+        action="store_true",
+        help="Upload processed outputs to Cloudflare R2 using config.yaml.",
+    )
+    parser.add_argument(
+        "--r2-config",
+        default="config.yaml",
+        help="Path to R2 YAML config file. Used with --write-r2.",
     )
     parser.add_argument(
         "--parquet-compression",
@@ -533,9 +545,9 @@ def write_parquet_batch(
     rows: list[dict[str, object]],
     timestamp_field: str,
     compression: str,
-) -> None:
+) -> list[Path]:
     if not rows:
-        return
+        return []
 
     grouped_rows: dict[str, list[dict[str, object]]] = {}
     for row in rows:
@@ -543,6 +555,7 @@ def write_parquet_batch(
         day = timestamp_value[:10] if len(timestamp_value) >= 10 else date_slug()
         grouped_rows.setdefault(day, []).append(row)
 
+    written_paths: list[Path] = []
     for day, day_rows in grouped_rows.items():
         out_dir = base_dir / f"date={day}"
         ensure_dir(out_dir)
@@ -561,6 +574,22 @@ def write_parquet_batch(
                     lambda value: None if value is None or pd.isna(value) else str(value)
                 )
         frame.to_parquet(out_path, index=False, compression=compression)
+        written_paths.append(out_path)
+    return written_paths
+
+
+async def maybe_upload_to_r2(
+    uploader: R2Uploader | None,
+    paths: list[Path],
+) -> None:
+    if uploader is None or not paths:
+        return
+    try:
+        uploaded_keys = await asyncio.to_thread(uploader.upload_files, paths)
+        if uploaded_keys:
+            print(f"[r2] uploaded {len(uploaded_keys)} object(s)")
+    except Exception as exc:
+        print(f"[r2] upload error: {exc!r}")
 
 
 def trade_row_is_after_start(trade_row: dict[str, object], collection_started_at: datetime) -> bool:
@@ -772,6 +801,7 @@ async def flush_processed_outputs(
     parquet_batch_sec: int,
     bucket_sec: int,
     compression: str,
+    r2_uploader: R2Uploader | None,
     stop_event: asyncio.Event,
 ) -> None:
     latest_funding_csv = out_root / "processed" / "live_funding_snapshots_latest.csv"
@@ -866,26 +896,37 @@ async def flush_processed_outputs(
 
         now = datetime.now(timezone.utc)
         if (now - last_parquet_flush).total_seconds() >= parquet_batch_sec:
-            write_parquet_batch(
-                funding_base_dir,
-                "funding_snapshots",
-                state.pending_funding_rows,
-                "snapshot_at_utc",
-                compression,
+            written_paths = []
+            written_paths.extend(
+                write_parquet_batch(
+                    funding_base_dir,
+                    "funding_snapshots",
+                    state.pending_funding_rows,
+                    "snapshot_at_utc",
+                    compression,
+                )
             )
-            write_parquet_batch(
-                book_base_dir,
-                "book_snapshots",
-                state.pending_book_rows,
-                "snapshot_at_utc",
-                compression,
+            written_paths.extend(
+                write_parquet_batch(
+                    book_base_dir,
+                    "book_snapshots",
+                    state.pending_book_rows,
+                    "snapshot_at_utc",
+                    compression,
+                )
             )
-            write_parquet_batch(
-                trade_aggregate_base_dir,
-                "trade_aggregates",
-                state.pending_trade_aggregate_rows,
-                "bucket_time_utc",
-                compression,
+            written_paths.extend(
+                write_parquet_batch(
+                    trade_aggregate_base_dir,
+                    "trade_aggregates",
+                    state.pending_trade_aggregate_rows,
+                    "bucket_time_utc",
+                    compression,
+                )
+            )
+            await maybe_upload_to_r2(
+                r2_uploader,
+                written_paths + [latest_funding_csv, latest_book_csv, latest_trade_csv, latest_trade_aggregate_csv],
             )
             state.pending_funding_rows.clear()
             state.pending_book_rows.clear()
@@ -901,26 +942,37 @@ async def flush_processed_outputs(
         state.pending_trade_aggregate_rows.append(row)
         append_recent_trade_aggregate(state, row)
 
-    write_parquet_batch(
-        funding_base_dir,
-        "funding_snapshots",
-        state.pending_funding_rows,
-        "snapshot_at_utc",
-        compression,
+    written_paths = []
+    written_paths.extend(
+        write_parquet_batch(
+            funding_base_dir,
+            "funding_snapshots",
+            state.pending_funding_rows,
+            "snapshot_at_utc",
+            compression,
+        )
     )
-    write_parquet_batch(
-        book_base_dir,
-        "book_snapshots",
-        state.pending_book_rows,
-        "snapshot_at_utc",
-        compression,
+    written_paths.extend(
+        write_parquet_batch(
+            book_base_dir,
+            "book_snapshots",
+            state.pending_book_rows,
+            "snapshot_at_utc",
+            compression,
+        )
     )
-    write_parquet_batch(
-        trade_aggregate_base_dir,
-        "trade_aggregates",
-        state.pending_trade_aggregate_rows,
-        "bucket_time_utc",
-        compression,
+    written_paths.extend(
+        write_parquet_batch(
+            trade_aggregate_base_dir,
+            "trade_aggregates",
+            state.pending_trade_aggregate_rows,
+            "bucket_time_utc",
+            compression,
+        )
+    )
+    await maybe_upload_to_r2(
+        r2_uploader,
+        written_paths + [latest_funding_csv, latest_book_csv, latest_trade_csv, latest_trade_aggregate_csv],
     )
 
 
@@ -933,6 +985,10 @@ async def run_live_collect(args: argparse.Namespace) -> None:
     session_stamp = timestamp_slug()
     day = date_slug()
     out_root = args.out_root
+    r2_uploader = None
+    if args.write_r2:
+        app_config = load_config(args.r2_config)
+        r2_uploader = R2Uploader(app_config.r2, out_root)
 
     lighter_market_stats_raw = (
         out_root / "raw" / "lighter" / "ws" / "market_stats" / f"date={day}" / f"market_stats_all_{session_stamp}.jsonl"
@@ -1024,6 +1080,7 @@ async def run_live_collect(args: argparse.Namespace) -> None:
             args.parquet_batch_sec,
             args.trade_aggregate_sec,
             args.parquet_compression,
+            r2_uploader,
             stop_event,
         )
     )
@@ -1034,6 +1091,7 @@ async def run_live_collect(args: argparse.Namespace) -> None:
     print(f"Trade aggregate sec -> {args.trade_aggregate_sec}")
     print(f"Parquet batch sec -> {args.parquet_batch_sec}")
     print(f"Write raw -> {args.write_raw}")
+    print(f"Write R2 -> {args.write_r2}")
     print(f"Processed funding latest -> {out_root / 'processed' / 'live_funding_snapshots_latest.csv'}")
     print(f"Processed book latest -> {out_root / 'processed' / 'live_book_snapshots_latest.csv'}")
     print(f"Processed trades latest -> {out_root / 'processed' / 'live_trade_tape_latest.csv'}")
