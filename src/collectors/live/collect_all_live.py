@@ -19,7 +19,6 @@ from src.collectors.non_live.common import (
     iso_utc,
     load_csv_rows,
     timestamp_slug,
-    write_csv,
 )
 from src.collectors.non_live.hyperliquid_public import fetch_meta_and_asset_ctxs, fetch_predicted_fundings
 from src.storage.r2_config import load_config
@@ -28,8 +27,6 @@ from src.storage.r2_uploader import R2Uploader
 
 LIGHTER_WS_URL = "wss://mainnet.zklighter.elliot.ai/stream"
 HYPERLIQUID_WS_URL = "wss://api.hyperliquid.xyz/ws"
-MAX_RECENT_TRADES = 5000
-MAX_RECENT_TRADE_AGGREGATES = 5000
 
 
 @dataclass
@@ -40,8 +37,6 @@ class LiveState:
     hyperliquid_ctx: dict[str, dict[str, Any]] = field(default_factory=dict)
     hyperliquid_predicted: dict[str, dict[str, Any]] = field(default_factory=dict)
     hyperliquid_books: dict[str, dict[str, Any]] = field(default_factory=dict)
-    recent_trades: list[dict[str, object]] = field(default_factory=list)
-    recent_trade_aggregates: list[dict[str, object]] = field(default_factory=list)
     trade_aggregate_buckets: dict[tuple[str, str, str], dict[str, object]] = field(default_factory=dict)
     pending_funding_rows: list[dict[str, object]] = field(default_factory=list)
     pending_book_rows: list[dict[str, object]] = field(default_factory=list)
@@ -75,7 +70,7 @@ def parse_args() -> argparse.Namespace:
         "--flush-sec",
         type=int,
         default=1,
-        help="How often to build 1-second funding/book summaries and latest CSVs.",
+        help="How often to build 1-second funding/book summaries before batching to Parquet.",
     )
     parser.add_argument(
         "--hyperliquid-poll-sec",
@@ -170,20 +165,6 @@ def bucket_start_utc(dt: datetime, bucket_sec: int) -> datetime:
     epoch_sec = int(dt.timestamp())
     bucket_epoch = epoch_sec - (epoch_sec % bucket_sec)
     return datetime.fromtimestamp(bucket_epoch, tz=timezone.utc)
-
-
-def append_recent_trade(state: LiveState, trade_row: dict[str, object]) -> None:
-    state.recent_trades.append(trade_row)
-    overflow = len(state.recent_trades) - MAX_RECENT_TRADES
-    if overflow > 0:
-        del state.recent_trades[:overflow]
-
-
-def append_recent_trade_aggregate(state: LiveState, aggregate_row: dict[str, object]) -> None:
-    state.recent_trade_aggregates.append(aggregate_row)
-    overflow = len(state.recent_trade_aggregates) - MAX_RECENT_TRADE_AGGREGATES
-    if overflow > 0:
-        del state.recent_trade_aggregates[:overflow]
 
 
 def resolve_symbol_market_map(args: argparse.Namespace) -> dict[str, int]:
@@ -679,7 +660,6 @@ async def lighter_trades_task(
                     for row in extract_lighter_trade_rows(payload, market_id_to_symbol):
                         if not trade_row_is_after_start(row, collection_started_at):
                             continue
-                        append_recent_trade(state, row)
                         update_trade_aggregate_bucket(state, row, bucket_sec)
         except Exception as exc:
             print(f"[lighter_trades] reconnect after error: {exc!r}")
@@ -786,7 +766,6 @@ async def hyperliquid_trades_task(
                     for row in rows:
                         if not trade_row_is_after_start(row, collection_started_at):
                             continue
-                        append_recent_trade(state, row)
                         update_trade_aggregate_bucket(state, row, bucket_sec)
         except Exception as exc:
             print(f"[hyperliquid_trades] reconnect after error: {exc!r}")
@@ -804,71 +783,9 @@ async def flush_processed_outputs(
     r2_uploader: R2Uploader | None,
     stop_event: asyncio.Event,
 ) -> None:
-    latest_funding_csv = out_root / "processed" / "live_funding_snapshots_latest.csv"
-    latest_book_csv = out_root / "processed" / "live_book_snapshots_latest.csv"
-    latest_trade_csv = out_root / "processed" / "live_trade_tape_latest.csv"
-    latest_trade_aggregate_csv = out_root / "processed" / "live_trade_aggregates_latest.csv"
-
     funding_base_dir = out_root / "processed" / "live" / "funding_snapshots"
     book_base_dir = out_root / "processed" / "live" / "book_snapshots"
     trade_aggregate_base_dir = out_root / "processed" / "live" / "trade_aggregates"
-
-    funding_fieldnames = [
-        "snapshot_at_utc",
-        "symbol",
-        "venue",
-        "current_funding_rate",
-        "predicted_or_reference_funding_rate",
-        "next_funding_time",
-        "index_price",
-        "mark_price",
-        "mid_price",
-        "last_trade_price",
-        "open_interest",
-    ]
-    book_fieldnames = [
-        "snapshot_at_utc",
-        "symbol",
-        "venue",
-        "best_bid",
-        "best_ask",
-        "mid_price",
-        "top_spread_bps",
-        "bid_depth_5bps_usd",
-        "ask_depth_5bps_usd",
-        "bid_depth_10bps_usd",
-        "ask_depth_10bps_usd",
-        "bid_depth_20bps_usd",
-        "ask_depth_20bps_usd",
-    ]
-    trade_fieldnames = [
-        "event_time_utc",
-        "event_time_ms",
-        "symbol",
-        "venue",
-        "trade_type",
-        "side",
-        "price",
-        "size",
-        "notional_usd",
-        "trade_id",
-        "tx_hash",
-        "is_liquidation",
-    ]
-    trade_aggregate_fieldnames = [
-        "bucket_time_utc",
-        "symbol",
-        "venue",
-        "trade_count",
-        "liquidation_count",
-        "total_size",
-        "total_notional_usd",
-        "vwap_price",
-        "open_price",
-        "high_price",
-        "low_price",
-        "close_price",
-    ]
 
     last_parquet_flush = datetime.now(timezone.utc)
 
@@ -879,20 +796,11 @@ async def flush_processed_outputs(
 
         if funding_rows:
             state.pending_funding_rows.extend(funding_rows)
-            write_csv(latest_funding_csv, funding_fieldnames, funding_rows)
         if book_rows:
             state.pending_book_rows.extend(book_rows)
-            write_csv(latest_book_csv, book_fieldnames, book_rows)
 
         if closed_trade_aggregates:
             state.pending_trade_aggregate_rows.extend(closed_trade_aggregates)
-            for row in closed_trade_aggregates:
-                append_recent_trade_aggregate(state, row)
-
-        if state.recent_trades:
-            write_csv(latest_trade_csv, trade_fieldnames, state.recent_trades)
-        if state.recent_trade_aggregates:
-            write_csv(latest_trade_aggregate_csv, trade_aggregate_fieldnames, state.recent_trade_aggregates)
 
         now = datetime.now(timezone.utc)
         if (now - last_parquet_flush).total_seconds() >= parquet_batch_sec:
@@ -926,7 +834,7 @@ async def flush_processed_outputs(
             )
             await maybe_upload_to_r2(
                 r2_uploader,
-                written_paths + [latest_funding_csv, latest_book_csv, latest_trade_csv, latest_trade_aggregate_csv],
+                written_paths,
             )
             state.pending_funding_rows.clear()
             state.pending_book_rows.clear()
@@ -940,7 +848,6 @@ async def flush_processed_outputs(
 
     for row in drain_closed_trade_aggregates(state, bucket_sec):
         state.pending_trade_aggregate_rows.append(row)
-        append_recent_trade_aggregate(state, row)
 
     written_paths = []
     written_paths.extend(
@@ -972,7 +879,7 @@ async def flush_processed_outputs(
     )
     await maybe_upload_to_r2(
         r2_uploader,
-        written_paths + [latest_funding_csv, latest_book_csv, latest_trade_csv, latest_trade_aggregate_csv],
+        written_paths,
     )
 
 
@@ -988,7 +895,7 @@ async def run_live_collect(args: argparse.Namespace) -> None:
     r2_uploader = None
     if args.write_r2:
         app_config = load_config(args.r2_config)
-        r2_uploader = R2Uploader(app_config.r2, out_root)
+        r2_uploader = R2Uploader(app_config.r2, out_root / "processed")
 
     lighter_market_stats_raw = (
         out_root / "raw" / "lighter" / "ws" / "market_stats" / f"date={day}" / f"market_stats_all_{session_stamp}.jsonl"
@@ -1092,10 +999,9 @@ async def run_live_collect(args: argparse.Namespace) -> None:
     print(f"Parquet batch sec -> {args.parquet_batch_sec}")
     print(f"Write raw -> {args.write_raw}")
     print(f"Write R2 -> {args.write_r2}")
-    print(f"Processed funding latest -> {out_root / 'processed' / 'live_funding_snapshots_latest.csv'}")
-    print(f"Processed book latest -> {out_root / 'processed' / 'live_book_snapshots_latest.csv'}")
-    print(f"Processed trades latest -> {out_root / 'processed' / 'live_trade_tape_latest.csv'}")
-    print(f"Processed trade aggregates latest -> {out_root / 'processed' / 'live_trade_aggregates_latest.csv'}")
+    print(f"Processed funding parquet dir -> {out_root / 'processed' / 'live' / 'funding_snapshots'}")
+    print(f"Processed book parquet dir -> {out_root / 'processed' / 'live' / 'book_snapshots'}")
+    print(f"Processed trade aggregates parquet dir -> {out_root / 'processed' / 'live' / 'trade_aggregates'}")
 
     try:
         if args.duration_sec > 0:

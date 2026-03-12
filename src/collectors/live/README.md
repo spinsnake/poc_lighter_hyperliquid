@@ -18,7 +18,8 @@ The current live collector is focused on:
 - 1-second mark / index / mid style prices
 - 1-second top-of-book and depth summaries
 - 1-second trade aggregates
-- recent raw trades in `latest.csv` for inspection only
+- Parquet summaries as the main long-term output
+- JSONL only for raw/debug streams when `-WriteRaw` is enabled
 
 It does not yet collect:
 
@@ -71,10 +72,9 @@ Or directly in foreground:
 
 The collector uploads only processed outputs in the current POC flow:
 
-- `processed/live/funding_snapshots/...parquet`
-- `processed/live/book_snapshots/...parquet`
-- `processed/live/trade_aggregates/...parquet`
-- `processed/live_*latest.csv`
+- `live/funding_snapshots/...parquet`
+- `live/book_snapshots/...parquet`
+- `live/trade_aggregates/...parquet`
 
 ## Output
 
@@ -89,10 +89,6 @@ Raw, only when `-WriteRaw` is used:
 
 Processed:
 
-- `data/processed/live_funding_snapshots_latest.csv`
-- `data/processed/live_book_snapshots_latest.csv`
-- `data/processed/live_trade_tape_latest.csv`
-- `data/processed/live_trade_aggregates_latest.csv`
 - `data/processed/live/funding_snapshots/date=YYYY-MM-DD/...parquet`
 - `data/processed/live/book_snapshots/date=YYYY-MM-DD/...parquet`
 - `data/processed/live/trade_aggregates/date=YYYY-MM-DD/...parquet`
@@ -101,5 +97,6 @@ Processed:
 
 - `.\start_live_collect.ps1` now starts with `all shared symbols` by default.
 - The default mode is summary-first and is intended for the threshold/formula POC.
+- The collector now writes only `parquet` and, when enabled, raw `jsonl`.
 - If a previous live collector is already running, the launcher stops it before starting a new one.
 - Orders / fills / balances / positions still need separate authenticated collectors.
