@@ -10,8 +10,8 @@ services:
       TARDIS_CONFIG: /app/config.yaml
       TARDIS_R2_CONFIG: /app/config.yaml
       TARDIS_DATA_TYPES: derivative_ticker
-      TARDIS_YEAR: "2026"
-      TARDIS_MONTH_NUMBER: "1"
+      TARDIS_YEAR: "2025"
+      TARDIS_MONTH_NUMBER: "12"
       TARDIS_BITGET_SYMBOLS: PERPETUALS
       TARDIS_HYPERLIQUID_SYMBOLS: PERPETUALS
       TARDIS_CONCURRENCY: "5"
