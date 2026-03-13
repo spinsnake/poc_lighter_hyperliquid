@@ -36,6 +36,17 @@ if [[ -n "${TARDIS_MONTH:-}" ]]; then
     --month
     "${TARDIS_MONTH}"
   )
+elif [[ -n "${TARDIS_FROM_DATE:-}" || -n "${TARDIS_TO_DATE:-}" ]]; then
+  if [[ -z "${TARDIS_FROM_DATE:-}" || -z "${TARDIS_TO_DATE:-}" ]]; then
+    echo "Set both TARDIS_FROM_DATE and TARDIS_TO_DATE when using date range mode."
+    exit 1
+  fi
+  python_args+=(
+    --from-date
+    "${TARDIS_FROM_DATE}"
+    --to-date
+    "${TARDIS_TO_DATE}"
+  )
 else
   python_args+=(
     --year

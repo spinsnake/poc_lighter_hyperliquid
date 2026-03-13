@@ -111,6 +111,12 @@ Collect Tardis data by passing year and month as separate arguments:
 .\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --year 2025 --month-number 10
 ```
 
+Collect Tardis data across an arbitrary inclusive date range:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --from-date 2025-02-11 --to-date 2026-02-28
+```
+
 Store temporary download files under a custom directory before upload:
 
 ```powershell
@@ -178,7 +184,8 @@ Latest processed outputs:
 - Contract-size confirmation is still partial until fills or position-value data are collected.
 - `collect_tardis_monthly_csv` reads the Tardis API key from `config.yaml` under the `tardis` field.
 - The default Tardis target month is October of the previous calendar year. On March 13, 2026 that resolves to `2025-10`.
-- You can choose the target period with either `--month YYYY-MM` or `--year YYYY --month-number MM`.
+- You can choose the target period with either `--month YYYY-MM`, `--year YYYY --month-number MM`, or `--from-date YYYY-MM-DD --to-date YYYY-MM-DD`.
+- `--to-date` is inclusive in date range mode.
 - `collect_tardis_monthly_csv` now uses only temporary local `.csv.gz` files during the run, converts them to `.parquet`, uploads the parquet files to R2, and removes the temp files.
 - Temporary Tardis download files now default to `data/raw/tardis/tardis_csv_r2_*`. Use `--temp-dir` when you want another temp location.
 - The script also deletes stale `tardis_csv_r2_*` temp workspaces from earlier runs when a new run starts.

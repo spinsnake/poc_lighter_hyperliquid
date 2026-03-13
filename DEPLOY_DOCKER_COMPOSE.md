@@ -1,6 +1,6 @@
 # Deploy With Docker Compose
 
-This repo now ships with a single Docker Compose service for the monthly Tardis export:
+This repo now ships with a single Docker Compose service for the Tardis export:
 
 - `tardis`
   Runs `src.collectors.non_live.collect_tardis_monthly_csv`.
@@ -14,11 +14,11 @@ This repo now ships with a single Docker Compose service for the monthly Tardis 
 
 ## Default Tardis Run
 
-`docker compose up --build` now runs the monthly Tardis export with these defaults:
+`docker compose up --build` now runs the Tardis export with these defaults:
 
 - `--data-types derivative_ticker`
-- `--year 2026`
-- `--month-number 2`
+- `--year 2025`
+- `--month-number 10`
 - `--bitget-symbols PERPETUALS`
 - `--hyperliquid-symbols PERPETUALS`
 
@@ -71,6 +71,8 @@ Main variables:
 - `TARDIS_MONTH`
 - `TARDIS_YEAR`
 - `TARDIS_MONTH_NUMBER`
+- `TARDIS_FROM_DATE`
+- `TARDIS_TO_DATE`
 - `TARDIS_BITGET_SYMBOLS`
 - `TARDIS_HYPERLIQUID_SYMBOLS`
 - `TARDIS_CONCURRENCY`
@@ -93,6 +95,15 @@ Use `--month YYYY-MM` instead of separate year/month:
 ```yaml
 environment:
   TARDIS_MONTH: "2025-10"
+```
+
+Use an arbitrary inclusive date range instead of month mode:
+
+```yaml
+environment:
+  TARDIS_MONTH: ""
+  TARDIS_FROM_DATE: "2025-02-11"
+  TARDIS_TO_DATE: "2026-02-28"
 ```
 
 Limit symbols:

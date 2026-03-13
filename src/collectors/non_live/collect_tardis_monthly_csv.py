@@ -158,6 +158,13 @@ def default_target_month() -> str:
     return f"{today.year - 1:04d}-10"
 
 
+def parse_iso_date(raw_value: str, label: str) -> date:
+    try:
+        return datetime.strptime(raw_value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise SystemExit(f"{label} must use YYYY-MM-DD format, for example 2025-02-11.") from exc
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -186,6 +193,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Target month number from 1 to 12. Use together with --year.",
+    )
+    parser.add_argument(
+        "--from-date",
+        default="",
+        help="Start date in YYYY-MM-DD. Use together with --to-date for arbitrary ranges.",
+    )
+    parser.add_argument(
+        "--to-date",
+        default="",
+        help="End date in YYYY-MM-DD, inclusive. Use together with --from-date for arbitrary ranges.",
     )
     parser.add_argument(
         "--data-types",
@@ -264,24 +281,50 @@ def parse_month(month: str) -> tuple[date, date]:
     return month_start, month_end
 
 
-def resolve_target_month(args: argparse.Namespace) -> str:
+def resolve_target_period(args: argparse.Namespace) -> tuple[date, date, str, str]:
     month_value = str(args.month or "").strip()
     year = int(args.year or 0)
     month_number = int(args.month_number or 0)
+    from_date_value = str(args.from_date or "").strip()
+    to_date_value = str(args.to_date or "").strip()
+
+    uses_month_mode = bool(month_value or year or month_number)
+    uses_range_mode = bool(from_date_value or to_date_value)
+
+    if uses_month_mode and uses_range_mode:
+        raise SystemExit(
+            "Use either --month/--year with --month-number or --from-date with --to-date, not both."
+        )
+
+    if uses_range_mode:
+        if not from_date_value or not to_date_value:
+            raise SystemExit("When using date range mode, provide both --from-date and --to-date.")
+        start_date = parse_iso_date(from_date_value, "--from-date")
+        end_date_inclusive = parse_iso_date(to_date_value, "--to-date")
+        if end_date_inclusive < start_date:
+            raise SystemExit("--to-date must be on or after --from-date.")
+        end_exclusive = end_date_inclusive + timedelta(days=1)
+        period_label = f"{start_date.isoformat()}_to_{end_date_inclusive.isoformat()}"
+        return start_date, end_exclusive, "range", period_label
 
     if month_value:
         if year or month_number:
             raise SystemExit("Use either --month YYYY-MM or --year with --month-number, not both.")
-        return month_value
+        month_start, month_end = parse_month(month_value)
+        return month_start, month_end, "month", month_value
 
     if year or month_number:
         if not year or not month_number:
             raise SystemExit("When using separate values, provide both --year and --month-number.")
         if month_number < 1 or month_number > 12:
             raise SystemExit("--month-number must be between 1 and 12.")
-        return f"{year:04d}-{month_number:02d}"
+        month_value = f"{year:04d}-{month_number:02d}"
+        month_start, month_end = parse_month(month_value)
+        return month_start, month_end, "month", month_value
 
-    return default_target_month()
+    month_value = default_target_month()
+    month_start, month_end = parse_month(month_value)
+    return month_start, month_end, "month", month_value
 
 
 def parse_csv_items(raw_value: str) -> list[str]:
@@ -405,8 +448,10 @@ def build_r2_parquet_object_key(exchange: str, data_type: str, day: date, symbol
     return f"{data_type}/{exchange}/{day.isoformat()}/{file_name}"
 
 
-def build_summary_object_key(month: str) -> str:
-    return f"summary/month={month}/summary.json"
+def build_summary_object_key(period_mode: str, period_label: str) -> str:
+    if period_mode == "month":
+        return f"summary/month={period_label}/summary.json"
+    return f"summary/range={period_label}/summary.json"
 
 
 def resolve_temp_parent(args: argparse.Namespace) -> Path:
@@ -625,28 +670,30 @@ def build_failure_summary(
     }
 
 
-def collect_exchange_month(
+def collect_exchange_range(
     session: requests.Session,
     exchange: str,
     symbols: list[str],
     data_types: list[str],
-    month: str,
-    month_start: date,
-    month_end: date,
+    period_mode: str,
+    period_label: str,
+    start_date: date,
+    end_exclusive: date,
     temp_root: Path,
     r2_uploader: R2Uploader,
     progress: ProgressTracker,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     summaries: list[dict[str, object]] = []
     failures: list[dict[str, object]] = []
+    end_date_inclusive = end_exclusive - timedelta(days=1)
 
     for data_type in data_types:
         for symbol in symbols:
             log(
-                f"Processing {exchange} {data_type} {symbol} for {month_start.isoformat()} "
-                f"to {month_end.isoformat()}..."
+                f"Processing {exchange} {data_type} {symbol} for {start_date.isoformat()} "
+                f"to {end_date_inclusive.isoformat()}..."
             )
-            for day in iter_days(month_start, month_end):
+            for day in iter_days(start_date, end_exclusive):
                 object_key = build_r2_parquet_object_key(exchange, data_type, day, symbol)
                 label = f"{exchange} {data_type} {symbol} {day.isoformat()}"
                 parquet_path = temp_root / build_temp_parquet_relative_path(exchange, data_type, day, symbol)
@@ -661,7 +708,7 @@ def collect_exchange_month(
                             "exchange": exchange,
                             "symbol": symbol,
                             "data_type": data_type,
-                            "month": month,
+                            period_mode: period_label,
                             "date": day.isoformat(),
                             "file_format": "parquet",
                             "object_key": full_key,
@@ -740,7 +787,7 @@ def collect_exchange_month(
                         "exchange": exchange,
                         "symbol": symbol,
                         "data_type": data_type,
-                        "month": month,
+                        period_mode: period_label,
                         "date": day.isoformat(),
                         "file_format": "parquet",
                         "object_key": uploaded_key,
@@ -756,8 +803,7 @@ def collect_exchange_month(
 def main() -> int:
     args = parse_args()
     configure_tardis_retry_logging(args.show_retry_errors)
-    target_month = resolve_target_month(args)
-    month_start, month_end = parse_month(target_month)
+    start_date, end_exclusive, period_mode, period_label = resolve_target_period(args)
     data_types = parse_csv_items(args.data_types)
     bitget_requested = parse_csv_items(args.bitget_symbols)
     hyperliquid_requested = parse_csv_items(args.hyperliquid_symbols)
@@ -799,7 +845,8 @@ def main() -> int:
     if hyperliquid_symbols:
         validate_data_types("hyperliquid", hyperliquid_symbols, data_types, hyperliquid_catalog)
 
-    day_count = (month_end - month_start).days
+    day_count = (end_exclusive - start_date).days
+    end_date_inclusive = end_exclusive - timedelta(days=1)
     total_items = day_count * (
         len(bitget_symbols) * len(data_types) + len(hyperliquid_symbols) * len(data_types)
     )
@@ -827,16 +874,17 @@ def main() -> int:
         if bitget_symbols:
             log(
                 f"Uploading bitget-futures {', '.join(data_types)} for {', '.join(bitget_symbols)} "
-                f"from {month_start.isoformat()} to {month_end.isoformat()} into R2..."
+                f"from {start_date.isoformat()} to {end_date_inclusive.isoformat()} into R2..."
             )
-            exchange_summary_rows, exchange_failure_rows = collect_exchange_month(
+            exchange_summary_rows, exchange_failure_rows = collect_exchange_range(
                 session=session,
                 exchange="bitget-futures",
                 symbols=bitget_symbols,
                 data_types=data_types,
-                month=target_month,
-                month_start=month_start,
-                month_end=month_end,
+                period_mode=period_mode,
+                period_label=period_label,
+                start_date=start_date,
+                end_exclusive=end_exclusive,
                 temp_root=temp_root,
                 r2_uploader=r2_uploader,
                 progress=progress,
@@ -847,16 +895,17 @@ def main() -> int:
         if hyperliquid_symbols:
             log(
                 f"Uploading hyperliquid {', '.join(data_types)} for {', '.join(hyperliquid_symbols)} "
-                f"from {month_start.isoformat()} to {month_end.isoformat()} into R2..."
+                f"from {start_date.isoformat()} to {end_date_inclusive.isoformat()} into R2..."
             )
-            exchange_summary_rows, exchange_failure_rows = collect_exchange_month(
+            exchange_summary_rows, exchange_failure_rows = collect_exchange_range(
                 session=session,
                 exchange="hyperliquid",
                 symbols=hyperliquid_symbols,
                 data_types=data_types,
-                month=target_month,
-                month_start=month_start,
-                month_end=month_end,
+                period_mode=period_mode,
+                period_label=period_label,
+                start_date=start_date,
+                end_exclusive=end_exclusive,
                 temp_root=temp_root,
                 r2_uploader=r2_uploader,
                 progress=progress,
@@ -864,11 +913,14 @@ def main() -> int:
             summary_rows.extend(exchange_summary_rows)
             failure_rows.extend(exchange_failure_rows)
 
-        summary_key = build_summary_object_key(target_month)
+        summary_key = build_summary_object_key(period_mode, period_label)
         summary_path = temp_root / "summary.json"
         summary_payload = {
             "collected_at_utc": collected_at,
-            "month": target_month,
+            "period_mode": period_mode,
+            "period_label": period_label,
+            "from_date": start_date.isoformat(),
+            "to_date": end_date_inclusive.isoformat(),
             "storage_mode": "r2_only_parquet",
             "file_format": "parquet",
             "summary": summary_rows,
@@ -918,7 +970,7 @@ def main() -> int:
             f"{row['date']} -> {row['error']}"
         )
 
-    log(f"Uploaded summary -> {r2_uploader.prefixed_object_key(build_summary_object_key(target_month))}")
+    log(f"Uploaded summary -> {r2_uploader.prefixed_object_key(build_summary_object_key(period_mode, period_label))}")
     if failure_rows:
         log(f"Completed with {len(failure_rows)} failed dataset(s).")
         return 1
