@@ -9,7 +9,7 @@ services:
     environment:
       TARDIS_CONFIG: /app/config.yaml
       TARDIS_R2_CONFIG: /app/config.yaml
-      TARDIS_DATA_TYPES: quotes
+      TARDIS_DATA_TYPES: trades
       TARDIS_YEAR: "2026"
       TARDIS_MONTH_NUMBER: "2"
       TARDIS_BITGET_SYMBOLS: PERPETUALS
