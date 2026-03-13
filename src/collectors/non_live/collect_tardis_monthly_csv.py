@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gzip
+import logging
+import shutil
 import tempfile
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,6 +17,47 @@ from tardis_dev.datasets.download import default_file_name
 from src.collectors.non_live.common import DATA_ROOT, ensure_dir, iso_utc, write_json
 from src.storage.r2_config import load_config
 from src.storage.r2_uploader import R2Uploader
+
+
+def log(message: str) -> None:
+    print(message, flush=True)
+
+
+def configure_tardis_retry_logging(show_retry_errors: bool) -> None:
+    retry_logger = logging.getLogger("tardis_dev.datasets.download")
+    if show_retry_errors:
+        retry_logger.disabled = False
+        retry_logger.propagate = True
+        return
+    retry_logger.handlers.clear()
+    retry_logger.propagate = False
+    retry_logger.disabled = True
+
+
+@dataclass
+class ProgressTracker:
+    total_units: int
+    bar_width: int = 24
+    completed_units: int = 0
+
+    def render(self) -> str:
+        if self.total_units <= 0:
+            return f"[{'#' * self.bar_width}] 100.0% (0/0)"
+
+        ratio = self.completed_units / self.total_units
+        filled = min(self.bar_width, int(self.bar_width * ratio))
+        bar = "#" * filled + "-" * (self.bar_width - filled)
+        return f"[{bar}] {ratio * 100:5.1f}% ({self.completed_units}/{self.total_units})"
+
+    def start(self) -> None:
+        log(f"[progress] {self.render()} starting")
+
+    def stage(self, label: str, status: str) -> None:
+        log(f"[progress] {self.render()} {status}: {label}")
+
+    def advance(self, label: str, status: str) -> None:
+        self.completed_units += 1
+        log(f"[progress] {self.render()} {status}: {label}")
 
 
 def default_target_month() -> str:
@@ -77,10 +121,24 @@ def parse_args() -> argparse.Namespace:
         help="Path to YAML config file containing R2 settings.",
     )
     parser.add_argument(
+        "--show-retry-errors",
+        action="store_true",
+        help="Show retry stack traces from tardis-dev downloads. Disabled by default.",
+    )
+    parser.add_argument(
         "--out-root",
         type=Path,
         default=DATA_ROOT,
         help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--temp-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Directory used for temporary Tardis downloads before upload. "
+            "Defaults to <repo>/data/raw/tardis."
+        ),
     )
     parser.add_argument(
         "--clean-raw-after-merge",
@@ -252,6 +310,34 @@ def build_summary_object_key(month: str) -> str:
     return f"tardis/summary/month={month}/summary.json"
 
 
+def resolve_temp_parent(args: argparse.Namespace) -> Path:
+    if args.temp_dir is not None:
+        return ensure_dir(args.temp_dir)
+    return ensure_dir(args.out_root / "raw" / "tardis")
+
+
+def iter_temp_workspaces(temp_parent: Path) -> list[Path]:
+    return sorted(
+        (path for path in temp_parent.glob("tardis_csv_r2_*") if path.is_dir()),
+        key=lambda path: path.name,
+    )
+
+
+def cleanup_temp_workspace(path: Path) -> None:
+    if not path.exists():
+        return
+    shutil.rmtree(path)
+    log(f"Removed temp directory: {path}")
+
+
+def cleanup_stale_temp_workspaces(temp_parent: Path) -> None:
+    for path in iter_temp_workspaces(temp_parent):
+        try:
+            cleanup_temp_workspace(path)
+        except OSError as exc:
+            log(f"Temp cleanup warning for {path}: {format_exception_message(exc)}")
+
+
 def tardis_download_filename(exchange: str, data_type: str, day: datetime, symbol: str, format_name: str) -> str:
     return build_temp_gzip_relative_path(
         exchange=exchange,
@@ -304,7 +390,7 @@ def upload_daily_csv_from_gzip(
     full_key = uploader.prefixed_object_key(object_key)
     remote_size = uploader.remote_object_size(full_key)
     if remote_size is not None:
-        print(f"[r2] {label}: skipped existing -> {full_key}")
+        log(f"[r2] {label}: skipped existing -> {full_key}")
         return full_key
 
     with gzip.open(gzip_path, "rb") as handle:
@@ -313,7 +399,7 @@ def upload_daily_csv_from_gzip(
             object_key,
             content_type="text/csv",
         )
-    print(f"[r2] {label}: uploaded -> {uploaded_key}")
+    log(f"[r2] {label}: uploaded -> {uploaded_key}")
     return uploaded_key
 
 
@@ -354,13 +440,14 @@ def collect_exchange_month(
     temp_root: Path,
     concurrency: int,
     r2_uploader: R2Uploader,
+    progress: ProgressTracker,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     summaries: list[dict[str, object]] = []
     failures: list[dict[str, object]] = []
 
     for data_type in data_types:
         for symbol in symbols:
-            print(
+            log(
                 f"Processing {exchange} {data_type} {symbol} for {month_start.isoformat()} "
                 f"to {month_end.isoformat()}..."
             )
@@ -370,7 +457,8 @@ def collect_exchange_month(
 
                 if r2_uploader.object_exists(object_key):
                     full_key = r2_uploader.prefixed_object_key(object_key)
-                    print(f"[r2] {label}: skipped existing -> {full_key}")
+                    progress.advance(label, "skipped existing")
+                    log(f"[r2] {label}: skipped existing -> {full_key}")
                     summaries.append(
                         {
                             "exchange": exchange,
@@ -387,7 +475,7 @@ def collect_exchange_month(
 
                 gzip_path: Path | None = None
                 try:
-                    print(f"Downloading {label}...")
+                    progress.stage(label, "downloading")
                     gzip_path = download_day_gzip(
                         temp_root=temp_root,
                         exchange=exchange,
@@ -410,10 +498,12 @@ def collect_exchange_month(
                             object_key=object_key,
                         )
                     )
-                    print(f"FAILED download {label}: {error_message}")
+                    progress.advance(label, "failed download")
+                    log(f"FAILED download {label}: {error_message}")
                     continue
 
                 try:
+                    progress.stage(label, "uploading")
                     uploaded_key = upload_daily_csv_from_gzip(
                         r2_uploader,
                         gzip_path=gzip_path,
@@ -433,7 +523,8 @@ def collect_exchange_month(
                             object_key=object_key,
                         )
                     )
-                    print(f"FAILED upload {label}: {error_message}")
+                    progress.advance(label, "failed upload")
+                    log(f"FAILED upload {label}: {error_message}")
                     continue
                 finally:
                     if gzip_path is not None:
@@ -451,12 +542,14 @@ def collect_exchange_month(
                         "skipped_existing": False,
                     }
                 )
+                progress.advance(label, "uploaded")
 
     return summaries, failures
 
 
 def main() -> int:
     args = parse_args()
+    configure_tardis_retry_logging(args.show_retry_errors)
     target_month = resolve_target_month(args)
     month_start, month_end = parse_month(target_month)
     data_types = parse_csv_items(args.data_types)
@@ -469,7 +562,7 @@ def main() -> int:
         raise SystemExit("Provide at least one symbol for Bitget Futures or Hyperliquid.")
 
     if args.write_r2 or args.write_r2_raw or args.clean_raw_after_merge:
-        print(
+        log(
             "Note: collect_tardis_monthly_csv now uploads CSV files directly to R2 and "
             "does not retain local Tardis files. Legacy local/raw flags are ignored."
         )
@@ -481,6 +574,8 @@ def main() -> int:
         r2_uploader.verify_bucket_access()
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
+    temp_parent = resolve_temp_parent(args)
+    cleanup_stale_temp_workspaces(temp_parent)
     collected_at = iso_utc()
     summary_rows: list[dict[str, object]] = []
     failure_rows: list[dict[str, object]] = []
@@ -498,11 +593,20 @@ def main() -> int:
     if hyperliquid_symbols:
         validate_data_types("hyperliquid", hyperliquid_symbols, data_types, hyperliquid_catalog)
 
-    with tempfile.TemporaryDirectory(prefix="tardis_csv_r2_") as temp_dir_name:
-        temp_root = Path(temp_dir_name)
+    day_count = (month_end - month_start).days
+    total_units = day_count * (
+        len(bitget_symbols) * len(data_types) + len(hyperliquid_symbols) * len(data_types)
+    )
+    progress = ProgressTracker(total_units=total_units)
+    progress.start()
+
+    temp_workspace = tempfile.TemporaryDirectory(prefix="tardis_csv_r2_", dir=str(temp_parent))
+    temp_root = Path(temp_workspace.name)
+    try:
+        log(f"Using temp directory: {temp_root}")
 
         if bitget_symbols:
-            print(
+            log(
                 f"Uploading bitget-futures {', '.join(data_types)} for {', '.join(bitget_symbols)} "
                 f"from {month_start.isoformat()} to {month_end.isoformat()} into R2..."
             )
@@ -517,12 +621,13 @@ def main() -> int:
                 temp_root=temp_root,
                 concurrency=args.concurrency,
                 r2_uploader=r2_uploader,
+                progress=progress,
             )
             summary_rows.extend(exchange_summary_rows)
             failure_rows.extend(exchange_failure_rows)
 
         if hyperliquid_symbols:
-            print(
+            log(
                 f"Uploading hyperliquid {', '.join(data_types)} for {', '.join(hyperliquid_symbols)} "
                 f"from {month_start.isoformat()} to {month_end.isoformat()} into R2..."
             )
@@ -537,6 +642,7 @@ def main() -> int:
                 temp_root=temp_root,
                 concurrency=args.concurrency,
                 r2_uploader=r2_uploader,
+                progress=progress,
             )
             summary_rows.extend(exchange_summary_rows)
             failure_rows.extend(exchange_failure_rows)
@@ -570,26 +676,32 @@ def main() -> int:
                     "object_key": summary_key,
                 }
             )
-            print(f"[r2] summary: FAILED -> {error_message}")
+            log(f"[r2] summary: FAILED -> {error_message}")
         else:
-            print(f"[r2] summary: uploaded -> {uploaded_summary_key}")
+            log(f"[r2] summary: uploaded -> {uploaded_summary_key}")
+    finally:
+        temp_workspace.cleanup()
+        try:
+            cleanup_temp_workspace(temp_root)
+        except OSError as exc:
+            log(f"Temp cleanup warning for {temp_root}: {format_exception_message(exc)}")
 
     for row in summary_rows:
         action = "skipped existing" if row["skipped_existing"] else "uploaded"
-        print(
+        log(
             f"{action}: {row['exchange']} {row['data_type']} {row['symbol']} {row['date']} -> "
             f"{row['object_key']}"
         )
 
     for row in failure_rows:
-        print(
+        log(
             f"Failed {row['stage']} {row['exchange']} {row['data_type']} {row['symbol']} "
             f"{row['date']} -> {row['error']}"
         )
 
-    print(f"Uploaded summary -> {r2_uploader.prefixed_object_key(build_summary_object_key(target_month))}")
+    log(f"Uploaded summary -> {r2_uploader.prefixed_object_key(build_summary_object_key(target_month))}")
     if failure_rows:
-        print(f"Completed with {len(failure_rows)} failed dataset(s).")
+        log(f"Completed with {len(failure_rows)} failed dataset(s).")
         return 1
     return 0
 

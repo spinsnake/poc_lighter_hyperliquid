@@ -111,10 +111,22 @@ Collect Tardis CSV by passing year and month as separate arguments:
 .\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --year 2025 --month-number 10
 ```
 
+Store temporary download files under a custom directory before upload:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --year 2025 --month-number 10 --temp-dir D:\git\poc_lighter_hyperliquid\data\raw\tardis
+```
+
 Collect a smaller Tardis export for one symbol per exchange using `derivative_ticker`:
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --data-types derivative_ticker --bitget-symbols BTCUSDT --hyperliquid-symbols BTC
+```
+
+Show retry stack traces from `tardis-dev` only when you are debugging download failures:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --data-types derivative_ticker --year 2026 --month-number 2 --show-retry-errors
 ```
 
 Generate unit-check report:
@@ -162,6 +174,10 @@ Latest processed outputs:
 - The default Tardis target month is October of the previous calendar year. On March 13, 2026 that resolves to `2025-10`.
 - You can choose the target period with either `--month YYYY-MM` or `--year YYYY --month-number MM`.
 - `collect_tardis_monthly_csv` now uses only temporary local `.csv.gz` files during the run, then uploads decompressed `.csv` files straight to R2 and removes the temp files.
+- Temporary Tardis download files now default to `data/raw/tardis/tardis_csv_r2_*`. Use `--temp-dir` when you want another temp location.
+- The script also deletes stale `tardis_csv_r2_*` temp workspaces from earlier runs when a new run starts.
+- The script now prints a per-day progress bar with percent complete across the whole request.
+- Retry stack traces from `tardis-dev` are hidden by default. Use `--show-retry-errors` only when you need verbose retry diagnostics.
 - Duplicate checks now happen against the destination R2 object key before each daily download. If the CSV object already exists, that day is skipped.
 - The per-run summary is uploaded to `tardis/summary/month=YYYY-MM/summary.json` and includes both successful and failed daily uploads.
 - `PERPETUALS` with `trades` produces large files. Use `derivative_ticker` or narrower symbols when you want a smaller export.
