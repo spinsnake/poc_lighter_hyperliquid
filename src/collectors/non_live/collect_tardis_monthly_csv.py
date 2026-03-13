@@ -769,7 +769,7 @@ def main() -> int:
 
     if args.write_r2 or args.write_r2_raw or args.clean_raw_after_merge:
         log(
-            "Note: collect_tardis_monthly_csv now uploads CSV files directly to R2 and "
+            "Note: collect_tardis_monthly_csv now uploads Parquet files directly to R2 and "
             "does not retain local Tardis files. Legacy local/raw flags are ignored."
         )
 

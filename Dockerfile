@@ -14,9 +14,9 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install -r /app/requirements.txt
 
 COPY src /app/src
-COPY docker/collector-entrypoint.sh /app/docker/collector-entrypoint.sh
-COPY config.example.yaml /app/config.example.yaml
+COPY docker /app/docker
+COPY config.yaml /app/config.yaml
 
-RUN chmod +x /app/docker/collector-entrypoint.sh
+RUN chmod +x /app/docker/*.sh
 
-ENTRYPOINT ["/app/docker/collector-entrypoint.sh"]
+ENTRYPOINT ["/app/docker/tardis-monthly-entrypoint.sh"]

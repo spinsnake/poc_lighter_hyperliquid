@@ -10,7 +10,7 @@ Current coverage:
 - Hyperliquid public reference data
 - Hyperliquid funding history
 - Hyperliquid user funding ledger
-- Tardis daily CSV upload to Cloudflare R2 for Bitget Futures and Hyperliquid
+- Tardis daily Parquet upload to Cloudflare R2 for Bitget Futures and Hyperliquid
 - Unit check report for funding-rate units and contract-size units
 
 ## Files
@@ -99,13 +99,13 @@ Collect Hyperliquid user funding ledger:
 .\.venv\Scripts\python.exe -m src.collectors.non_live.collect_hyperliquid_user_funding --user 0xYOURADDRESS --days 30
 ```
 
-Collect Tardis daily CSV files for October of last year using aggregate perpetual symbols on both exchanges and upload them directly to R2:
+Collect Tardis daily files for October of last year using aggregate perpetual symbols on both exchanges and upload Parquet output directly to R2:
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv
 ```
 
-Collect Tardis CSV by passing year and month as separate arguments:
+Collect Tardis data by passing year and month as separate arguments:
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --year 2025 --month-number 10
@@ -127,6 +127,12 @@ Show retry stack traces from `tardis-dev` only when you are debugging download f
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --data-types derivative_ticker --year 2026 --month-number 2 --show-retry-errors
+```
+
+Run the same monthly Tardis job with Docker Compose:
+
+```powershell
+docker compose up --build
 ```
 
 Generate unit-check report:

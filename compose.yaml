@@ -1,23 +1,23 @@
 services:
-  collector:
+  tardis:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: poc-lighter-hyperliquid
-    restart: unless-stopped
+    container_name: poc-lighter-hyperliquid-tardis
+    restart: "no"
+    init: true
     environment:
-      RUN_REFERENCE_ON_START: "1"
-      ALL_SHARED: "1"
-      WRITE_R2: "1"
-      WRITE_RAW: "0"
-      FLUSH_SEC: "1"
-      HYPERLIQUID_POLL_SEC: "1"
-      PARQUET_BATCH_SEC: "60"
-      TRADE_AGGREGATE_SEC: "1"
-      PARQUET_COMPRESSION: "zstd"
-      DURATION_SEC: "0"
-      SYMBOLS: ""
-      EXTRA_ARGS: ""
+      TARDIS_CONFIG: /app/config.yaml
+      TARDIS_R2_CONFIG: /app/config.yaml
+      TARDIS_DATA_TYPES: derivative_ticker
+      TARDIS_YEAR: "2026"
+      TARDIS_MONTH_NUMBER: "2"
+      TARDIS_BITGET_SYMBOLS: PERPETUALS
+      TARDIS_HYPERLIQUID_SYMBOLS: PERPETUALS
+      TARDIS_CONCURRENCY: "5"
+      TARDIS_TEMP_DIR: /app/data/raw/tardis
+      TARDIS_SHOW_RETRY_ERRORS: "0"
+      TARDIS_EXTRA_ARGS: ""
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs

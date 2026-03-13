@@ -1,92 +1,127 @@
-# Deploy ด้วย Docker Compose
+# Deploy With Docker Compose
 
-เอกสารนี้ใช้กับโปรเจคนี้โดยตรง ถ้าต้องการรัน collector แบบ `docker compose`
+This repo now ships with a single Docker Compose service for the monthly Tardis export:
 
-## ไฟล์ที่เพิ่มแล้ว
+- `tardis`
+  Runs `src.collectors.non_live.collect_tardis_monthly_csv`.
+
+## Files
 
 - [Dockerfile](/d:/git/poc_lighter_hyperliquid/Dockerfile)
 - [compose.yaml](/d:/git/poc_lighter_hyperliquid/compose.yaml)
-- [docker/collector-entrypoint.sh](/d:/git/poc_lighter_hyperliquid/docker/collector-entrypoint.sh)
+- [docker/tardis-monthly-entrypoint.sh](/d:/git/poc_lighter_hyperliquid/docker/tardis-monthly-entrypoint.sh)
 - [.dockerignore](/d:/git/poc_lighter_hyperliquid/.dockerignore)
 
-## behavior ปัจจุบัน
+## Default Tardis Run
 
-container จะทำตามนี้:
+`docker compose up --build` now runs the monthly Tardis export with these defaults:
 
-1. เช็กว่า `config.yaml` มีอยู่
-2. รัน `collect_reference_data`
-3. เริ่ม `collect_all_live --all-shared --write-r2`
+- `--data-types derivative_ticker`
+- `--year 2026`
+- `--month-number 2`
+- `--bitget-symbols PERPETUALS`
+- `--hyperliquid-symbols PERPETUALS`
 
-output:
+The container mounts:
 
-- local bind mount:
-  - `./data`
-  - `./logs`
-- R2:
-  - `live/funding_snapshots/...parquet`
-  - `live/book_snapshots/...parquet`
-  - `live/trade_aggregates/...parquet`
+- `./data` to `/app/data`
+- `./logs` to `/app/logs`
+- `./config.yaml` to `/app/config.yaml`
 
-## เตรียมก่อนรัน
+`config.yaml` must contain both:
 
-1. ติดตั้ง Docker และ Docker Compose plugin บนเครื่อง server
-2. วาง `config.yaml` ที่ root ของ repo
-3. เช็กว่า `config.yaml` ใส่ค่า R2 ครบ
+- `tardis`
+- `r2`
 
-## คำสั่งหลัก
+## Commands
 
-### build และ start
+Build and run the default monthly Tardis job:
+
+```bash
+docker compose up --build
+```
+
+Run in detached mode:
 
 ```bash
 docker compose up -d --build
 ```
 
-### ดู log
+View logs for the Tardis job:
 
 ```bash
-docker compose logs -f
+docker compose logs -f tardis
 ```
 
-### หยุด
+Stop and remove containers:
 
 ```bash
 docker compose down
 ```
 
-### restart
+## Customizing The Tardis Job
+
+Edit the `tardis` environment block in [compose.yaml](/d:/git/poc_lighter_hyperliquid/compose.yaml).
+
+Main variables:
+
+- `TARDIS_DATA_TYPES`
+- `TARDIS_MONTH`
+- `TARDIS_YEAR`
+- `TARDIS_MONTH_NUMBER`
+- `TARDIS_BITGET_SYMBOLS`
+- `TARDIS_HYPERLIQUID_SYMBOLS`
+- `TARDIS_CONCURRENCY`
+- `TARDIS_TEMP_DIR`
+- `TARDIS_SHOW_RETRY_ERRORS`
+- `TARDIS_EXTRA_ARGS`
+
+Examples:
+
+Run a different month:
+
+```yaml
+environment:
+  TARDIS_YEAR: "2025"
+  TARDIS_MONTH_NUMBER: "10"
+```
+
+Use `--month YYYY-MM` instead of separate year/month:
+
+```yaml
+environment:
+  TARDIS_MONTH: "2025-10"
+```
+
+Limit symbols:
+
+```yaml
+environment:
+  TARDIS_BITGET_SYMBOLS: BTCUSDT
+  TARDIS_HYPERLIQUID_SYMBOLS: BTC
+```
+
+Pass extra flags through to the Python module:
+
+```yaml
+environment:
+  TARDIS_EXTRA_ARGS: --show-retry-errors
+```
+
+## Plain Docker
+
+Build the image:
 
 ```bash
-docker compose restart
+docker build -t poc-lighter-hyperliquid .
 ```
 
-## ปรับค่า runtime
+Run the same monthly Tardis job without compose:
 
-แก้ใน [compose.yaml](/d:/git/poc_lighter_hyperliquid/compose.yaml) ได้เลย เช่น:
-
-- `WRITE_R2`
-- `WRITE_RAW`
-- `FLUSH_SEC`
-- `PARQUET_BATCH_SEC`
-- `SYMBOLS`
-- `DURATION_SEC`
-- `EXTRA_ARGS`
-
-ตัวอย่าง ถ้าจะเก็บแค่ BTC,ETH,SOL:
-
-```yaml
-environment:
-  ALL_SHARED: "0"
-  SYMBOLS: "BTC,ETH,SOL"
+```bash
+docker run --rm \
+  -v "$(pwd)/data:/app/data" \
+  -v "$(pwd)/logs:/app/logs" \
+  -v "$(pwd)/config.yaml:/app/config.yaml:ro" \
+  poc-lighter-hyperliquid
 ```
-
-ตัวอย่าง ถ้าจะเปิด raw:
-
-```yaml
-environment:
-  WRITE_RAW: "1"
-```
-
-## หมายเหตุ
-
-- container ใช้ bind mount ดังนั้นข้อมูลไม่หายเมื่อ recreate container
-- ตอนนี้เครื่อง local นี้ยังไม่มี `docker` ติดตั้ง ผมเลยสร้างไฟล์ deploy ให้ แต่ยังไม่ได้ validate ด้วย `docker compose up` จริงบนเครื่องนี้
