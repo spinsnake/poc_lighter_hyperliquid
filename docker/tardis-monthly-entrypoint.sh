@@ -21,15 +21,25 @@ python_args=(
   "${TARDIS_R2_CONFIG:-/app/config.yaml}"
   --data-types
   "${TARDIS_DATA_TYPES:-derivative_ticker}"
-  --bitget-symbols
-  "${TARDIS_BITGET_SYMBOLS:-PERPETUALS}"
-  --hyperliquid-symbols
-  "${TARDIS_HYPERLIQUID_SYMBOLS:-PERPETUALS}"
   --concurrency
   "${TARDIS_CONCURRENCY:-5}"
   --temp-dir
   "${TARDIS_TEMP_DIR:-/app/data/raw/tardis}"
 )
+
+if [[ -n "${TARDIS_EXCHANGE_SYMBOLS:-}" ]]; then
+  python_args+=(
+    --exchange-symbols
+    "${TARDIS_EXCHANGE_SYMBOLS}"
+  )
+else
+  python_args+=(
+    --bitget-symbols
+    "${TARDIS_BITGET_SYMBOLS:-PERPETUALS}"
+    --hyperliquid-symbols
+    "${TARDIS_HYPERLIQUID_SYMBOLS:-PERPETUALS}"
+  )
+fi
 
 if [[ -n "${TARDIS_MONTH:-}" ]]; then
   python_args+=(

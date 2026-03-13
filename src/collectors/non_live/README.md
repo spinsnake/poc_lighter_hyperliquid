@@ -10,7 +10,7 @@ Current coverage:
 - Hyperliquid public reference data
 - Hyperliquid funding history
 - Hyperliquid user funding ledger
-- Tardis daily Parquet upload to Cloudflare R2 for Bitget Futures and Hyperliquid
+- Tardis daily Parquet upload to Cloudflare R2 for selected exchanges
 - Unit check report for funding-rate units and contract-size units
 
 ## Files
@@ -117,6 +117,12 @@ Collect Tardis data across an arbitrary inclusive date range:
 .\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --from-date 2025-02-11 --to-date 2026-02-28
 ```
 
+Collect Tardis data by naming exchanges explicitly, for example `bybit` plus `hyperliquid`:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --data-types derivative_ticker --exchange-symbols "bybit=PERPETUALS;hyperliquid=PERPETUALS" --from-date 2025-10-01 --to-date 2026-02-28
+```
+
 Store temporary download files under a custom directory before upload:
 
 ```powershell
@@ -171,6 +177,7 @@ Latest processed outputs:
 - `data/processed/hyperliquid_user_funding_latest.csv`
 - `data/processed/hyperliquid_user_funding_latest.json`
 - `summary/month=YYYY-MM/summary.json`
+- `summary/range=YYYY-MM-DD_to_YYYY-MM-DD/summary.json`
 - `data/reports/funding_unit_check_latest.csv`
 - `data/reports/contract_size_check_latest.csv`
 - `data/reports/unit_check_report_latest.md`
@@ -186,11 +193,13 @@ Latest processed outputs:
 - The default Tardis target month is October of the previous calendar year. On March 13, 2026 that resolves to `2025-10`.
 - You can choose the target period with either `--month YYYY-MM`, `--year YYYY --month-number MM`, or `--from-date YYYY-MM-DD --to-date YYYY-MM-DD`.
 - `--to-date` is inclusive in date range mode.
+- You can choose exchanges explicitly with `--exchange-symbols exchange=symbol1,symbol2;exchange=symbol1`, for example `bybit=PERPETUALS;hyperliquid=PERPETUALS`.
+- Legacy `--bitget-symbols` and `--hyperliquid-symbols` flags still work when `--exchange-symbols` is not provided.
 - `collect_tardis_monthly_csv` now uses only temporary local `.csv.gz` files during the run, converts them to `.parquet`, uploads the parquet files to R2, and removes the temp files.
 - Temporary Tardis download files now default to `data/raw/tardis/tardis_csv_r2_*`. Use `--temp-dir` when you want another temp location.
 - The script also deletes stale `tardis_csv_r2_*` temp workspaces from earlier runs when a new run starts.
 - The script now prints byte-based progress for each day during download, conversion, and upload.
 - Retry stack traces from `tardis-dev` are hidden by default. Use `--show-retry-errors` only when you need verbose retry diagnostics.
 - Duplicate checks now happen against the destination R2 object key before each daily download. If the parquet object already exists, that day is skipped.
-- The per-run summary is uploaded to `summary/month=YYYY-MM/summary.json` and includes both successful and failed daily uploads.
+- The per-run summary is uploaded to `summary/month=YYYY-MM/summary.json` or `summary/range=YYYY-MM-DD_to_YYYY-MM-DD/summary.json` and includes both successful and failed daily uploads.
 - `PERPETUALS` with `trades` produces large files. Use `derivative_ticker` or narrower symbols when you want a smaller export.

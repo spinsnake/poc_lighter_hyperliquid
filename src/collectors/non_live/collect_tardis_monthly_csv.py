@@ -168,7 +168,7 @@ def parse_iso_date(raw_value: str, label: str) -> date:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Download Tardis daily gzip CSVs for Bitget Futures and Hyperliquid, "
+            "Download Tardis daily gzip CSVs for selected exchanges, "
             "convert them to Parquet, and upload them directly to Cloudflare R2."
         )
     )
@@ -208,6 +208,15 @@ def parse_args() -> argparse.Namespace:
         "--data-types",
         default="trades",
         help="Comma-separated Tardis dataset types, e.g. trades or derivative_ticker.",
+    )
+    parser.add_argument(
+        "--exchange-symbols",
+        default="",
+        help=(
+            "Semicolon-separated exchange=symbol1,symbol2 entries, for example "
+            "bybit=PERPETUALS;hyperliquid=PERPETUALS. When set, this overrides "
+            "--bitget-symbols and --hyperliquid-symbols."
+        ),
     )
     parser.add_argument(
         "--bitget-symbols",
@@ -329,6 +338,45 @@ def resolve_target_period(args: argparse.Namespace) -> tuple[date, date, str, st
 
 def parse_csv_items(raw_value: str) -> list[str]:
     return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
+def parse_exchange_symbols(raw_value: str) -> dict[str, list[str]]:
+    exchange_symbols: dict[str, list[str]] = {}
+    for raw_entry in raw_value.split(";"):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        if "=" not in entry:
+            raise SystemExit(
+                "Each --exchange-symbols entry must use exchange=symbol1,symbol2 format, "
+                "for example bybit=PERPETUALS;hyperliquid=PERPETUALS."
+            )
+        exchange, raw_symbols = entry.split("=", 1)
+        exchange_name = exchange.strip().lower()
+        symbols = parse_csv_items(raw_symbols)
+        if not exchange_name or not symbols:
+            raise SystemExit(
+                "Each --exchange-symbols entry must include both exchange name and at least one symbol."
+            )
+        if exchange_name in exchange_symbols:
+            raise SystemExit(f"Duplicate exchange in --exchange-symbols: {exchange_name}")
+        exchange_symbols[exchange_name] = symbols
+    return exchange_symbols
+
+
+def resolve_requested_exchange_symbols(args: argparse.Namespace) -> dict[str, list[str]]:
+    requested_exchange_symbols = parse_exchange_symbols(str(args.exchange_symbols or ""))
+    if requested_exchange_symbols:
+        return requested_exchange_symbols
+
+    fallback: dict[str, list[str]] = {}
+    bitget_requested = parse_csv_items(args.bitget_symbols)
+    hyperliquid_requested = parse_csv_items(args.hyperliquid_symbols)
+    if bitget_requested:
+        fallback["bitget-futures"] = bitget_requested
+    if hyperliquid_requested:
+        fallback["hyperliquid"] = hyperliquid_requested
+    return fallback
 
 
 def load_tardis_api_key(config_path: str | Path) -> str:
@@ -805,13 +853,14 @@ def main() -> int:
     configure_tardis_retry_logging(args.show_retry_errors)
     start_date, end_exclusive, period_mode, period_label = resolve_target_period(args)
     data_types = parse_csv_items(args.data_types)
-    bitget_requested = parse_csv_items(args.bitget_symbols)
-    hyperliquid_requested = parse_csv_items(args.hyperliquid_symbols)
+    requested_exchange_symbols = resolve_requested_exchange_symbols(args)
 
     if not data_types:
         raise SystemExit("Provide at least one value in --data-types.")
-    if not bitget_requested and not hyperliquid_requested:
-        raise SystemExit("Provide at least one symbol for Bitget Futures or Hyperliquid.")
+    if not requested_exchange_symbols:
+        raise SystemExit(
+            "Provide at least one exchange mapping via --exchange-symbols or legacy exchange-specific symbol args."
+        )
 
     if args.write_r2 or args.write_r2_raw or args.clean_raw_after_merge:
         log(
@@ -831,24 +880,22 @@ def main() -> int:
     collected_at = iso_utc()
     summary_rows: list[dict[str, object]] = []
     failure_rows: list[dict[str, object]] = []
-    bitget_catalog = load_symbol_catalog("bitget-futures") if bitget_requested else {}
-    hyperliquid_catalog = load_symbol_catalog("hyperliquid") if hyperliquid_requested else {}
-    bitget_symbols = (
-        resolve_symbols("bitget-futures", bitget_requested, bitget_catalog) if bitget_requested else []
-    )
-    hyperliquid_symbols = (
-        resolve_symbols("hyperliquid", hyperliquid_requested, hyperliquid_catalog) if hyperliquid_requested else []
-    )
-
-    if bitget_symbols:
-        validate_data_types("bitget-futures", bitget_symbols, data_types, bitget_catalog)
-    if hyperliquid_symbols:
-        validate_data_types("hyperliquid", hyperliquid_symbols, data_types, hyperliquid_catalog)
+    resolved_symbols_by_exchange: dict[str, list[str]] = {}
+    for exchange, requested_symbols in requested_exchange_symbols.items():
+        try:
+            catalog = load_symbol_catalog(exchange)
+        except Exception as exc:
+            raise SystemExit(
+                f"Failed to load Tardis exchange metadata for {exchange}: {format_exception_message(exc)}"
+            ) from exc
+        resolved_symbols = resolve_symbols(exchange, requested_symbols, catalog)
+        validate_data_types(exchange, resolved_symbols, data_types, catalog)
+        resolved_symbols_by_exchange[exchange] = resolved_symbols
 
     day_count = (end_exclusive - start_date).days
     end_date_inclusive = end_exclusive - timedelta(days=1)
-    total_items = day_count * (
-        len(bitget_symbols) * len(data_types) + len(hyperliquid_symbols) * len(data_types)
+    total_items = day_count * sum(
+        len(symbols) * len(data_types) for symbols in resolved_symbols_by_exchange.values()
     )
     progress = ProgressTracker(total_items=total_items)
     progress.start()
@@ -871,36 +918,15 @@ def main() -> int:
     try:
         log(f"Using temp directory: {temp_root}")
 
-        if bitget_symbols:
+        for exchange, symbols in resolved_symbols_by_exchange.items():
             log(
-                f"Uploading bitget-futures {', '.join(data_types)} for {', '.join(bitget_symbols)} "
+                f"Uploading {exchange} {', '.join(data_types)} for {', '.join(symbols)} "
                 f"from {start_date.isoformat()} to {end_date_inclusive.isoformat()} into R2..."
             )
             exchange_summary_rows, exchange_failure_rows = collect_exchange_range(
                 session=session,
-                exchange="bitget-futures",
-                symbols=bitget_symbols,
-                data_types=data_types,
-                period_mode=period_mode,
-                period_label=period_label,
-                start_date=start_date,
-                end_exclusive=end_exclusive,
-                temp_root=temp_root,
-                r2_uploader=r2_uploader,
-                progress=progress,
-            )
-            summary_rows.extend(exchange_summary_rows)
-            failure_rows.extend(exchange_failure_rows)
-
-        if hyperliquid_symbols:
-            log(
-                f"Uploading hyperliquid {', '.join(data_types)} for {', '.join(hyperliquid_symbols)} "
-                f"from {start_date.isoformat()} to {end_date_inclusive.isoformat()} into R2..."
-            )
-            exchange_summary_rows, exchange_failure_rows = collect_exchange_range(
-                session=session,
-                exchange="hyperliquid",
-                symbols=hyperliquid_symbols,
+                exchange=exchange,
+                symbols=symbols,
                 data_types=data_types,
                 period_mode=period_mode,
                 period_label=period_label,

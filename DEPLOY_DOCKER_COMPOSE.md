@@ -16,11 +16,10 @@ This repo now ships with a single Docker Compose service for the Tardis export:
 
 `docker compose up --build` now runs the Tardis export with these defaults:
 
-- `--data-types derivative_ticker`
-- `--year 2025`
-- `--month-number 10`
-- `--bitget-symbols PERPETUALS`
-- `--hyperliquid-symbols PERPETUALS`
+- `--data-types trades`
+- `--from-date 2025-10-01`
+- `--to-date 2026-02-28`
+- `--exchange-symbols bitget-futures=PERPETUALS;hyperliquid=PERPETUALS`
 
 The container mounts:
 
@@ -73,12 +72,15 @@ Main variables:
 - `TARDIS_MONTH_NUMBER`
 - `TARDIS_FROM_DATE`
 - `TARDIS_TO_DATE`
+- `TARDIS_EXCHANGE_SYMBOLS`
 - `TARDIS_BITGET_SYMBOLS`
 - `TARDIS_HYPERLIQUID_SYMBOLS`
 - `TARDIS_CONCURRENCY`
 - `TARDIS_TEMP_DIR`
 - `TARDIS_SHOW_RETRY_ERRORS`
 - `TARDIS_EXTRA_ARGS`
+
+`TARDIS_EXCHANGE_SYMBOLS` takes precedence over the legacy `TARDIS_BITGET_SYMBOLS` and `TARDIS_HYPERLIQUID_SYMBOLS` variables.
 
 Examples:
 
@@ -106,12 +108,18 @@ environment:
   TARDIS_TO_DATE: "2026-02-28"
 ```
 
-Limit symbols:
+Pick exchanges explicitly:
 
 ```yaml
 environment:
-  TARDIS_BITGET_SYMBOLS: BTCUSDT
-  TARDIS_HYPERLIQUID_SYMBOLS: BTC
+  TARDIS_EXCHANGE_SYMBOLS: "bybit=PERPETUALS;hyperliquid=PERPETUALS"
+```
+
+Limit symbols with explicit exchange names:
+
+```yaml
+environment:
+  TARDIS_EXCHANGE_SYMBOLS: "bybit=BTCUSDT;bitget-futures=BTCUSDT;hyperliquid=BTC"
 ```
 
 Pass extra flags through to the Python module:

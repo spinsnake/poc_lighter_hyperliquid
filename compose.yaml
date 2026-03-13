@@ -9,12 +9,13 @@ services:
     environment:
       TARDIS_CONFIG: /app/config.yaml
       TARDIS_R2_CONFIG: /app/config.yaml
-      TARDIS_DATA_TYPES: trades
+      TARDIS_DATA_TYPES: derivative_ticker # derivative_ticker, trades
       TARDIS_MONTH: ""
       TARDIS_FROM_DATE: "2025-10-01"
       TARDIS_TO_DATE: "2026-02-28"
-      TARDIS_BITGET_SYMBOLS: PERPETUALS
-      TARDIS_HYPERLIQUID_SYMBOLS: PERPETUALS
+      TARDIS_EXCHANGE_SYMBOLS: "bybit=PERPETUALS" # e.g. bybit=PERPETUALS;hyperliquid=PERPETUALS
+      TARDIS_BITGET_SYMBOLS: ""
+      TARDIS_HYPERLIQUID_SYMBOLS: ""
       TARDIS_CONCURRENCY: "5"
       TARDIS_TEMP_DIR: /app/data/raw/tardis
       TARDIS_SHOW_RETRY_ERRORS: "0"
