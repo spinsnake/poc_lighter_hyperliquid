@@ -10,3 +10,4 @@ r2:
 storage:
   local_data_root: data
   upload_processed_only: true
+tardis: YOUR_TARDIS_API_KEY
