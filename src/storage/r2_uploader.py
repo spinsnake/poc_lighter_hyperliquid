@@ -3,7 +3,7 @@ from __future__ import annotations
 import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Callable
 
 from botocore.exceptions import ClientError
 
@@ -92,7 +92,13 @@ class R2Uploader:
         )
         return object_key
 
-    def upload_path_to_object_key(self, path: Path, object_key: str) -> str | None:
+    def upload_path_to_object_key(
+        self,
+        path: Path,
+        object_key: str,
+        *,
+        callback: Callable[[int], None] | None = None,
+    ) -> str | None:
         if not path.exists() or not path.is_file():
             return None
 
@@ -102,6 +108,7 @@ class R2Uploader:
             self.config.bucket,
             full_key,
             ExtraArgs=self.extra_args_for(path),
+            Callback=callback,
         )
         return full_key
 

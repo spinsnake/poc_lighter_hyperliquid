@@ -3,15 +3,25 @@ from __future__ import annotations
 import argparse
 import asyncio
 import gzip
+import io
 import logging
+import os
+import random
+import secrets
 import shutil
 import tempfile
+import time
+import urllib.error
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+import requests
 import yaml
-from tardis_dev import datasets, get_exchange_details
+from tardis_dev import get_exchange_details
 from tardis_dev.datasets.download import default_file_name
 
 from src.collectors.non_live.common import DATA_ROOT, ensure_dir, iso_utc, write_json
@@ -36,28 +46,111 @@ def configure_tardis_retry_logging(show_retry_errors: bool) -> None:
 
 @dataclass
 class ProgressTracker:
-    total_units: int
+    total_items: int
     bar_width: int = 24
-    completed_units: int = 0
+    current_item: int = 0
+    current_label: str = ""
+    _last_stage: str = ""
+    _last_percent_bucket: int = -1
+    _last_logged_at: float = 0.0
+    _last_current_bytes: int = -1
+    _last_total_bytes: int = -1
 
-    def render(self) -> str:
-        if self.total_units <= 0:
-            return f"[{'#' * self.bar_width}] 100.0% (0/0)"
-
-        ratio = self.completed_units / self.total_units
+    def render_bar(self, ratio: float) -> str:
         filled = min(self.bar_width, int(self.bar_width * ratio))
         bar = "#" * filled + "-" * (self.bar_width - filled)
-        return f"[{bar}] {ratio * 100:5.1f}% ({self.completed_units}/{self.total_units})"
+        return f"[{bar}] {ratio * 100:5.1f}%"
 
     def start(self) -> None:
-        log(f"[progress] {self.render()} starting")
+        log(f"[progress] starting {self.total_items} item(s)")
 
-    def stage(self, label: str, status: str) -> None:
-        log(f"[progress] {self.render()} {status}: {label}")
+    def start_item(self, label: str) -> None:
+        self.current_item += 1
+        self.current_label = label
+        self._last_stage = ""
+        self._last_percent_bucket = -1
+        self._last_logged_at = 0.0
+        self._last_current_bytes = -1
+        self._last_total_bytes = -1
 
-    def advance(self, label: str, status: str) -> None:
-        self.completed_units += 1
-        log(f"[progress] {self.render()} {status}: {label}")
+    def update_bytes(
+        self,
+        stage: str,
+        current_bytes: int,
+        total_bytes: int | None,
+        *,
+        force: bool = False,
+    ) -> None:
+        prefix = f"[progress {self.current_item}/{self.total_items}]"
+        now = time.monotonic()
+        normalized_total = total_bytes or 0
+        if (
+            stage == self._last_stage
+            and current_bytes == self._last_current_bytes
+            and normalized_total == self._last_total_bytes
+        ):
+            return
+        if total_bytes and total_bytes > 0:
+            ratio = min(1.0, current_bytes / total_bytes)
+            percent_bucket = int((ratio * 100) // 5)
+            should_log = (
+                force
+                or stage != self._last_stage
+                or percent_bucket > self._last_percent_bucket
+                or now - self._last_logged_at >= 15
+                or current_bytes >= total_bytes
+            )
+            if not should_log:
+                return
+            bar = self.render_bar(ratio)
+            log(
+                f"{prefix} {stage:<11} {bar} {self.current_label} "
+                f"({format_bytes(current_bytes)}/{format_bytes(total_bytes)})"
+            )
+            self._last_percent_bucket = percent_bucket
+        else:
+            should_log = force or stage != self._last_stage or now - self._last_logged_at >= 15
+            if not should_log:
+                return
+            log(f"{prefix} {stage:<11} {self.current_label}")
+            self._last_percent_bucket = -1
+        self._last_stage = stage
+        self._last_logged_at = now
+        self._last_current_bytes = current_bytes
+        self._last_total_bytes = normalized_total
+
+    def finish_item(self, status: str) -> None:
+        log(f"[progress {self.current_item}/{self.total_items}] {status}: {self.current_label}")
+
+
+class CountingReader:
+    def __init__(self, raw) -> None:
+        self.raw = raw
+        self.bytes_read = 0
+
+    def read(self, size: int = -1) -> bytes:
+        data = self.raw.read(size)
+        self.bytes_read += len(data)
+        return data
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def close(self) -> None:
+        self.raw.close()
+
+
+def format_bytes(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024.0 or unit == "TB":
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
 
 
 def default_target_month() -> str:
@@ -69,7 +162,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Download Tardis daily gzip CSVs for Bitget Futures and Hyperliquid, "
-            "convert them to CSV, and upload them directly to Cloudflare R2."
+            "convert them to Parquet, and upload them directly to Cloudflare R2."
         )
     )
     parser.add_argument(
@@ -113,7 +206,7 @@ def parse_args() -> argparse.Namespace:
         "--concurrency",
         type=int,
         default=5,
-        help="Tardis download concurrency. Daily CSV uploads are processed one day at a time.",
+        help="HTTP connection pool size for Tardis requests. Daily files are still processed one at a time.",
     )
     parser.add_argument(
         "--r2-config",
@@ -300,14 +393,20 @@ def build_temp_gzip_relative_path(
     return Path("tardis_tmp") / data_type / exchange / day.isoformat() / file_name
 
 
-def build_r2_csv_object_key(exchange: str, data_type: str, day: date, symbol: str) -> str:
+def build_temp_parquet_relative_path(exchange: str, data_type: str, day: date, symbol: str) -> Path:
     symbol_token = normalize_symbol_token(symbol)
-    file_name = f"{exchange}_{data_type}_{day.isoformat()}_{symbol_token}.csv"
-    return f"tardis/{data_type}/{exchange}/{day.isoformat()}/{file_name}"
+    file_name = f"{exchange}_{data_type}_{day.isoformat()}_{symbol_token}.parquet"
+    return Path("parquet_tmp") / data_type / exchange / day.isoformat() / file_name
+
+
+def build_r2_parquet_object_key(exchange: str, data_type: str, day: date, symbol: str) -> str:
+    symbol_token = normalize_symbol_token(symbol)
+    file_name = f"{exchange}_{data_type}_{day.isoformat()}_{symbol_token}.parquet"
+    return f"{data_type}/{exchange}/{day.isoformat()}/{file_name}"
 
 
 def build_summary_object_key(month: str) -> str:
-    return f"tardis/summary/month={month}/summary.json"
+    return f"summary/month={month}/summary.json"
 
 
 def resolve_temp_parent(args: argparse.Namespace) -> Path:
@@ -338,54 +437,142 @@ def cleanup_stale_temp_workspaces(temp_parent: Path) -> None:
             log(f"Temp cleanup warning for {path}: {format_exception_message(exc)}")
 
 
-def tardis_download_filename(exchange: str, data_type: str, day: datetime, symbol: str, format_name: str) -> str:
-    return build_temp_gzip_relative_path(
-        exchange=exchange,
-        data_type=data_type,
-        day=day.date(),
-        symbol=symbol,
-        format_name=format_name,
-    ).as_posix()
+def build_dataset_url(exchange: str, data_type: str, day: date, symbol: str, format_name: str = "csv") -> str:
+    symbol_token = normalize_symbol_token(symbol)
+    return (
+        f"https://datasets.tardis.dev/v1/{exchange}/{data_type}/"
+        f"{day.strftime('%Y/%m/%d')}/{symbol_token}.{format_name}.gz"
+    )
+
+
+def get_retry_status_code(exc: Exception) -> int | None:
+    if isinstance(exc, urllib.error.HTTPError):
+        return int(exc.code)
+    if isinstance(exc, requests.HTTPError) and exc.response is not None:
+        return int(exc.response.status_code)
+    return None
+
+
+def should_retry_download(exc: Exception) -> bool:
+    if isinstance(exc, OSError):
+        return False
+    status_code = get_retry_status_code(exc)
+    if status_code is not None:
+        return status_code not in {400, 401}
+    return isinstance(exc, requests.RequestException)
+
+
+def next_retry_delay_seconds(exc: Exception, attempt: int) -> float:
+    status_code = get_retry_status_code(exc)
+    delay = random.random() + (2 ** attempt)
+    if status_code == 429:
+        delay += 3 * attempt
+    return delay
 
 
 def download_day_gzip(
+    session: requests.Session,
     temp_root: Path,
     exchange: str,
     data_type: str,
     symbol: str,
     day: date,
-    api_key: str,
-    concurrency: int,
+    progress: ProgressTracker,
 ) -> Path:
-    from_date = day.isoformat()
-    to_date = (day + timedelta(days=1)).isoformat()
     expected = temp_root / build_temp_gzip_relative_path(exchange, data_type, day, symbol)
     ensure_dir(expected.parent)
-    datasets.download(
-        exchange=exchange,
-        data_types=[data_type],
-        symbols=[symbol],
-        from_date=from_date,
-        to_date=to_date,
-        format="csv",
-        api_key=api_key,
-        download_dir=str(temp_root),
-        get_filename=tardis_download_filename,
-        concurrency=concurrency,
-    )
-    if not expected.exists():
-        raise FileNotFoundError(
-            f"Tardis download did not produce the expected gzip file for {exchange} "
-            f"{data_type} {symbol} on {day.isoformat()}: {expected}"
-        )
-    return expected
+    url = build_dataset_url(exchange, data_type, day, symbol)
+    max_attempts = 5
+
+    if expected.exists():
+        return expected
+
+    for attempt in range(1, max_attempts + 1):
+        temp_download_path = expected.with_name(f"{expected.name}{secrets.token_hex(8)}.unconfirmed")
+        downloaded_bytes = 0
+        try:
+            request_url = url if attempt == 1 else f"{url}?retryAttempt={attempt - 1}"
+            with session.get(request_url, stream=True, timeout=(30, 30 * 60)) as response:
+                if response.status_code != 200:
+                    raise urllib.error.HTTPError(
+                        request_url,
+                        code=response.status_code,
+                        msg=response.text,
+                        hdrs=None,
+                        fp=None,
+                    )
+                total_bytes_header = response.headers.get("Content-Length")
+                total_bytes = int(total_bytes_header) if total_bytes_header else None
+                progress.update_bytes("downloading", 0, total_bytes, force=True)
+                with temp_download_path.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        progress.update_bytes("downloading", downloaded_bytes, total_bytes)
+            os.replace(temp_download_path, expected)
+            progress.update_bytes("downloading", downloaded_bytes, total_bytes, force=True)
+            return expected
+        except Exception as exc:
+            temp_download_path.unlink(missing_ok=True)
+            if attempt == max_attempts or not should_retry_download(exc):
+                raise
+            time.sleep(next_retry_delay_seconds(exc, attempt))
+
+    raise RuntimeError(f"Unexpected download retry state for {expected}")
 
 
-def upload_daily_csv_from_gzip(
-    uploader: R2Uploader,
+def convert_gzip_csv_to_parquet(
     gzip_path: Path,
+    parquet_path: Path,
+    progress: ProgressTracker,
+) -> Path:
+    compressed_size = int(gzip_path.stat().st_size)
+    ensure_dir(parquet_path.parent)
+    writer: pq.ParquetWriter | None = None
+    schema: pa.Schema | None = None
+
+    with gzip_path.open("rb") as compressed_handle:
+        counter = CountingReader(compressed_handle)
+        gzip_stream = gzip.GzipFile(fileobj=counter, mode="rb")
+        text_stream = io.TextIOWrapper(gzip_stream, encoding="utf-8", newline="")
+        try:
+            progress.update_bytes("converting", 0, compressed_size, force=True)
+            for chunk in pd.read_csv(
+                text_stream,
+                chunksize=200_000,
+                low_memory=False,
+                dtype_backend="pyarrow",
+            ):
+                table = pa.Table.from_pandas(chunk, preserve_index=False, schema=schema)
+                if writer is None:
+                    schema = table.schema
+                    writer = pq.ParquetWriter(parquet_path, schema, compression="snappy")
+                writer.write_table(table)
+                progress.update_bytes(
+                    "converting",
+                    min(counter.bytes_read, compressed_size),
+                    compressed_size,
+                )
+        finally:
+            text_stream.close()
+            if writer is not None:
+                writer.close()
+
+    if not parquet_path.exists():
+        raise FileNotFoundError(f"Parquet output was not created: {parquet_path}")
+
+    progress.update_bytes("converting", compressed_size, compressed_size, force=True)
+    return parquet_path
+
+
+def upload_daily_parquet(
+    uploader: R2Uploader,
+    parquet_path: Path,
     object_key: str,
     label: str,
+    progress: ProgressTracker,
 ) -> str:
     full_key = uploader.prefixed_object_key(object_key)
     remote_size = uploader.remote_object_size(full_key)
@@ -393,12 +580,21 @@ def upload_daily_csv_from_gzip(
         log(f"[r2] {label}: skipped existing -> {full_key}")
         return full_key
 
-    with gzip.open(gzip_path, "rb") as handle:
-        uploaded_key = uploader.upload_fileobj_to_object_key(
-            handle,
-            object_key,
-            content_type="text/csv",
-        )
+    parquet_size = int(parquet_path.stat().st_size)
+    uploaded_bytes = 0
+
+    def callback(bytes_transferred: int) -> None:
+        nonlocal uploaded_bytes
+        uploaded_bytes += int(bytes_transferred)
+        progress.update_bytes("uploading", min(uploaded_bytes, parquet_size), parquet_size)
+
+    progress.update_bytes("uploading", 0, parquet_size, force=True)
+    uploaded_key = uploader.upload_path_to_object_key(
+        parquet_path,
+        object_key,
+        callback=callback,
+    )
+    progress.update_bytes("uploading", parquet_size, parquet_size, force=True)
     log(f"[r2] {label}: uploaded -> {uploaded_key}")
     return uploaded_key
 
@@ -430,15 +626,14 @@ def build_failure_summary(
 
 
 def collect_exchange_month(
+    session: requests.Session,
     exchange: str,
     symbols: list[str],
     data_types: list[str],
     month: str,
     month_start: date,
     month_end: date,
-    api_key: str,
     temp_root: Path,
-    concurrency: int,
     r2_uploader: R2Uploader,
     progress: ProgressTracker,
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
@@ -452,12 +647,14 @@ def collect_exchange_month(
                 f"to {month_end.isoformat()}..."
             )
             for day in iter_days(month_start, month_end):
-                object_key = build_r2_csv_object_key(exchange, data_type, day, symbol)
+                object_key = build_r2_parquet_object_key(exchange, data_type, day, symbol)
                 label = f"{exchange} {data_type} {symbol} {day.isoformat()}"
+                parquet_path = temp_root / build_temp_parquet_relative_path(exchange, data_type, day, symbol)
+                progress.start_item(label)
 
                 if r2_uploader.object_exists(object_key):
                     full_key = r2_uploader.prefixed_object_key(object_key)
-                    progress.advance(label, "skipped existing")
+                    progress.finish_item("skipped existing")
                     log(f"[r2] {label}: skipped existing -> {full_key}")
                     summaries.append(
                         {
@@ -466,6 +663,7 @@ def collect_exchange_month(
                             "data_type": data_type,
                             "month": month,
                             "date": day.isoformat(),
+                            "file_format": "parquet",
                             "object_key": full_key,
                             "uploaded": False,
                             "skipped_existing": True,
@@ -474,16 +672,16 @@ def collect_exchange_month(
                     continue
 
                 gzip_path: Path | None = None
+                parquet_output: Path | None = None
                 try:
-                    progress.stage(label, "downloading")
                     gzip_path = download_day_gzip(
+                        session=session,
                         temp_root=temp_root,
                         exchange=exchange,
                         data_type=data_type,
                         symbol=symbol,
                         day=day,
-                        api_key=api_key,
-                        concurrency=concurrency,
+                        progress=progress,
                     )
                 except Exception as exc:
                     error_message = format_exception_message(exc)
@@ -498,17 +696,22 @@ def collect_exchange_month(
                             object_key=object_key,
                         )
                     )
-                    progress.advance(label, "failed download")
+                    progress.finish_item("failed download")
                     log(f"FAILED download {label}: {error_message}")
                     continue
 
                 try:
-                    progress.stage(label, "uploading")
-                    uploaded_key = upload_daily_csv_from_gzip(
-                        r2_uploader,
+                    parquet_output = convert_gzip_csv_to_parquet(
                         gzip_path=gzip_path,
+                        parquet_path=parquet_path,
+                        progress=progress,
+                    )
+                    uploaded_key = upload_daily_parquet(
+                        r2_uploader,
+                        parquet_path=parquet_output,
                         object_key=object_key,
                         label=label,
+                        progress=progress,
                     )
                 except Exception as exc:
                     error_message = format_exception_message(exc)
@@ -523,12 +726,14 @@ def collect_exchange_month(
                             object_key=object_key,
                         )
                     )
-                    progress.advance(label, "failed upload")
-                    log(f"FAILED upload {label}: {error_message}")
+                    progress.finish_item("failed processing")
+                    log(f"FAILED processing {label}: {error_message}")
                     continue
                 finally:
                     if gzip_path is not None:
                         gzip_path.unlink(missing_ok=True)
+                    if parquet_output is not None:
+                        parquet_output.unlink(missing_ok=True)
 
                 summaries.append(
                     {
@@ -537,12 +742,13 @@ def collect_exchange_month(
                         "data_type": data_type,
                         "month": month,
                         "date": day.isoformat(),
+                        "file_format": "parquet",
                         "object_key": uploaded_key,
                         "uploaded": True,
                         "skipped_existing": False,
                     }
                 )
-                progress.advance(label, "uploaded")
+                progress.finish_item("uploaded")
 
     return summaries, failures
 
@@ -594,14 +800,27 @@ def main() -> int:
         validate_data_types("hyperliquid", hyperliquid_symbols, data_types, hyperliquid_catalog)
 
     day_count = (month_end - month_start).days
-    total_units = day_count * (
+    total_items = day_count * (
         len(bitget_symbols) * len(data_types) + len(hyperliquid_symbols) * len(data_types)
     )
-    progress = ProgressTracker(total_units=total_units)
+    progress = ProgressTracker(total_items=total_items)
     progress.start()
 
     temp_workspace = tempfile.TemporaryDirectory(prefix="tardis_csv_r2_", dir=str(temp_parent))
     temp_root = Path(temp_workspace.name)
+    session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(
+        pool_connections=max(1, args.concurrency),
+        pool_maxsize=max(1, args.concurrency),
+    )
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.headers.update(
+        {
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "poc_lighter_hyperliquid/tardis-collector",
+        }
+    )
     try:
         log(f"Using temp directory: {temp_root}")
 
@@ -611,15 +830,14 @@ def main() -> int:
                 f"from {month_start.isoformat()} to {month_end.isoformat()} into R2..."
             )
             exchange_summary_rows, exchange_failure_rows = collect_exchange_month(
+                session=session,
                 exchange="bitget-futures",
                 symbols=bitget_symbols,
                 data_types=data_types,
                 month=target_month,
                 month_start=month_start,
                 month_end=month_end,
-                api_key=api_key,
                 temp_root=temp_root,
-                concurrency=args.concurrency,
                 r2_uploader=r2_uploader,
                 progress=progress,
             )
@@ -632,15 +850,14 @@ def main() -> int:
                 f"from {month_start.isoformat()} to {month_end.isoformat()} into R2..."
             )
             exchange_summary_rows, exchange_failure_rows = collect_exchange_month(
+                session=session,
                 exchange="hyperliquid",
                 symbols=hyperliquid_symbols,
                 data_types=data_types,
                 month=target_month,
                 month_start=month_start,
                 month_end=month_end,
-                api_key=api_key,
                 temp_root=temp_root,
-                concurrency=args.concurrency,
                 r2_uploader=r2_uploader,
                 progress=progress,
             )
@@ -652,7 +869,8 @@ def main() -> int:
         summary_payload = {
             "collected_at_utc": collected_at,
             "month": target_month,
-            "storage_mode": "r2_only",
+            "storage_mode": "r2_only_parquet",
+            "file_format": "parquet",
             "summary": summary_rows,
             "failed": failure_rows,
             "success_count": len(summary_rows),
@@ -680,6 +898,7 @@ def main() -> int:
         else:
             log(f"[r2] summary: uploaded -> {uploaded_summary_key}")
     finally:
+        session.close()
         temp_workspace.cleanup()
         try:
             cleanup_temp_workspace(temp_root)

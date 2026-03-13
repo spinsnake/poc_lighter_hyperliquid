@@ -144,7 +144,7 @@ Raw payloads:
 - `data/raw/hyperliquid/rest/date=YYYY-MM-DD/reference_bundle_*.json`
 - `data/raw/hyperliquid/rest/funding_history/date=YYYY-MM-DD/coin=..._*.json`
 - `data/raw/hyperliquid/rest/user_funding/date=YYYY-MM-DD/user=..._*.json`
-- `tardis/{data_type}/{exchange}/YYYY-MM-DD/{exchange}_{data_type}_YYYY-MM-DD_{symbol}.csv`
+- `{data_type}/{exchange}/YYYY-MM-DD/{exchange}_{data_type}_YYYY-MM-DD_{symbol}.parquet`
 
 Latest processed outputs:
 
@@ -158,7 +158,7 @@ Latest processed outputs:
 - `data/processed/hyperliquid_funding_history_latest.json`
 - `data/processed/hyperliquid_user_funding_latest.csv`
 - `data/processed/hyperliquid_user_funding_latest.json`
-- `tardis/summary/month=YYYY-MM/summary.json`
+- `summary/month=YYYY-MM/summary.json`
 - `data/reports/funding_unit_check_latest.csv`
 - `data/reports/contract_size_check_latest.csv`
 - `data/reports/unit_check_report_latest.md`
@@ -173,11 +173,11 @@ Latest processed outputs:
 - `collect_tardis_monthly_csv` reads the Tardis API key from `config.yaml` under the `tardis` field.
 - The default Tardis target month is October of the previous calendar year. On March 13, 2026 that resolves to `2025-10`.
 - You can choose the target period with either `--month YYYY-MM` or `--year YYYY --month-number MM`.
-- `collect_tardis_monthly_csv` now uses only temporary local `.csv.gz` files during the run, then uploads decompressed `.csv` files straight to R2 and removes the temp files.
+- `collect_tardis_monthly_csv` now uses only temporary local `.csv.gz` files during the run, converts them to `.parquet`, uploads the parquet files to R2, and removes the temp files.
 - Temporary Tardis download files now default to `data/raw/tardis/tardis_csv_r2_*`. Use `--temp-dir` when you want another temp location.
 - The script also deletes stale `tardis_csv_r2_*` temp workspaces from earlier runs when a new run starts.
-- The script now prints a per-day progress bar with percent complete across the whole request.
+- The script now prints byte-based progress for each day during download, conversion, and upload.
 - Retry stack traces from `tardis-dev` are hidden by default. Use `--show-retry-errors` only when you need verbose retry diagnostics.
-- Duplicate checks now happen against the destination R2 object key before each daily download. If the CSV object already exists, that day is skipped.
-- The per-run summary is uploaded to `tardis/summary/month=YYYY-MM/summary.json` and includes both successful and failed daily uploads.
+- Duplicate checks now happen against the destination R2 object key before each daily download. If the parquet object already exists, that day is skipped.
+- The per-run summary is uploaded to `summary/month=YYYY-MM/summary.json` and includes both successful and failed daily uploads.
 - `PERPETUALS` with `trades` produces large files. Use `derivative_ticker` or narrower symbols when you want a smaller export.
