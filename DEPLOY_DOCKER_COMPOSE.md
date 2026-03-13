@@ -28,6 +28,8 @@ The container mounts:
 - `./logs` to `/app/logs`
 - `./config.yaml` to `/app/config.yaml`
 
+`config.yaml` is mounted at runtime and is not copied into the Docker image.
+
 `config.yaml` must contain both:
 
 - `tardis`

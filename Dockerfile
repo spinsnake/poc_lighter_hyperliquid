@@ -15,7 +15,7 @@ RUN pip install -r /app/requirements.txt
 
 COPY src /app/src
 COPY docker /app/docker
-COPY config.yaml /app/config.yaml
+COPY config.example.yaml /app/config.example.yaml
 
 RUN chmod +x /app/docker/*.sh
 
