@@ -9,11 +9,15 @@ services:
     environment:
       TARDIS_CONFIG: /app/config.yaml
       TARDIS_R2_CONFIG: /app/config.yaml
-      TARDIS_DATA_TYPES: book_snapshot_5 # derivative_ticker, trades, incremental_book_L2,quotes,book_snapshot_5,book_snapshot_25,liquidations
+      TARDIS_DATA_TYPES: quotes # Explicit Bitget quotes symbol list for 2025-10-01..2026-02-28
       TARDIS_MONTH: ""
       TARDIS_FROM_DATE: "2025-10-01"
       TARDIS_TO_DATE: "2026-02-28"
-      TARDIS_EXCHANGE_SYMBOLS: "bitget=PERPETUALS" # e.g. bybit=PERPETUALS;hyperliquid=PERPETUALS,bitget=PERPETUALS
+      TARDIS_EXCHANGE_SYMBOLS: >-
+        bitget-futures=LIGHTUSDT,MUSDT,MERLUSDT,METUSDT,NILUSDT,OBOLUSDT,OGUSDT,
+        PAXGUSDT,PUMPBTCUSDT,RECALLUSDT,RIVERUSDT,SAHARAUSDT,SCRTUSDT,SOLPERP,
+        SOLUSD,SOLUSDT,SOONUSDT,SUNUSDT,TUSDT,TURTLEUSDT,UBUSDT,VELOUSDT,
+        VTHOUSDT,XAUTUSDT,YBUSDT,YZYUSDT,ZECUSDT
       TARDIS_BITGET_SYMBOLS: ""
       TARDIS_HYPERLIQUID_SYMBOLS: ""
       TARDIS_CONCURRENCY: "5"

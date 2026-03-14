@@ -33,6 +33,9 @@ def log(message: str) -> None:
     print(message, flush=True)
 
 
+INTERSECT_SELECTOR_PREFIX = "@intersect:"
+
+
 def configure_tardis_retry_logging(show_retry_errors: bool) -> None:
     retry_logger = logging.getLogger("tardis_dev.datasets.download")
     if show_retry_errors:
@@ -214,7 +217,8 @@ def parse_args() -> argparse.Namespace:
         default="",
         help=(
             "Semicolon-separated exchange=symbol1,symbol2 entries, for example "
-            "bybit=PERPETUALS;hyperliquid=PERPETUALS. When set, this overrides "
+            "bybit=PERPETUALS;hyperliquid=PERPETUALS. You can also use selectors "
+            "such as bitget-futures=@intersect:bybit. When set, this overrides "
             "--bitget-symbols and --hyperliquid-symbols."
         ),
     )
@@ -421,6 +425,85 @@ def load_symbol_catalog(exchange: str) -> dict[str, dict[str, object]]:
         for item in symbols
         if item.get("id")
     }
+
+
+def get_symbol_catalog(
+    exchange: str,
+    catalog_cache: dict[str, dict[str, dict[str, object]]],
+) -> dict[str, dict[str, object]]:
+    exchange_name = exchange.strip().lower()
+    catalog = catalog_cache.get(exchange_name)
+    if catalog is not None:
+        return catalog
+
+    catalog = load_symbol_catalog(exchange_name)
+    catalog_cache[exchange_name] = catalog
+    return catalog
+
+
+def supports_data_types(item: dict[str, object], data_types: list[str]) -> bool:
+    supported = {str(data_type) for data_type in item.get("dataTypes", [])}
+    return all(data_type in supported for data_type in data_types)
+
+
+def expand_symbol_selectors(
+    exchange: str,
+    requested_symbols: list[str],
+    data_types: list[str],
+    catalog_cache: dict[str, dict[str, dict[str, object]]],
+) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
+    exchange_name = exchange.strip().lower()
+    exchange_catalog = get_symbol_catalog(exchange_name, catalog_cache)
+
+    for raw_symbol in requested_symbols:
+        token = raw_symbol.strip()
+        token_lower = token.lower()
+        if token_lower.startswith(INTERSECT_SELECTOR_PREFIX):
+            peer_exchange = token[len(INTERSECT_SELECTOR_PREFIX) :].strip().lower()
+            if not peer_exchange:
+                raise SystemExit(
+                    f"Invalid selector '{raw_symbol}' for {exchange_name}. "
+                    "Use @intersect:<exchange>, for example @intersect:bybit."
+                )
+            if peer_exchange == exchange_name:
+                raise SystemExit(
+                    f"Invalid selector '{raw_symbol}' for {exchange_name}. "
+                    "The peer exchange must be different from the target exchange."
+                )
+
+            peer_catalog = get_symbol_catalog(peer_exchange, catalog_cache)
+            shared_symbols = sorted(
+                str(item["id"])
+                for normalized_symbol, item in exchange_catalog.items()
+                if normalized_symbol in peer_catalog
+                and supports_data_types(item, data_types)
+                and supports_data_types(peer_catalog[normalized_symbol], data_types)
+            )
+            if not shared_symbols:
+                raise SystemExit(
+                    f"No symbols found for {exchange_name} {raw_symbol} with data type(s): "
+                    f"{', '.join(data_types)}"
+                )
+
+            log(
+                f"[symbols] {exchange_name} {raw_symbol} -> {len(shared_symbols)} symbol(s) "
+                f"shared with {peer_exchange} for {', '.join(data_types)}"
+            )
+            for shared_symbol in shared_symbols:
+                normalized_symbol = normalize_symbol_token(shared_symbol)
+                if normalized_symbol not in seen:
+                    seen.add(normalized_symbol)
+                    expanded.append(shared_symbol)
+            continue
+
+        normalized_symbol = normalize_symbol_token(token)
+        if normalized_symbol not in seen:
+            seen.add(normalized_symbol)
+            expanded.append(token)
+
+    return expanded
 
 
 def resolve_symbols(exchange: str, requested_symbols: list[str], catalog: dict[str, dict[str, object]]) -> list[str]:
@@ -881,14 +964,21 @@ def main() -> int:
     summary_rows: list[dict[str, object]] = []
     failure_rows: list[dict[str, object]] = []
     resolved_symbols_by_exchange: dict[str, list[str]] = {}
+    symbol_catalog_cache: dict[str, dict[str, dict[str, object]]] = {}
     for exchange, requested_symbols in requested_exchange_symbols.items():
         try:
-            catalog = load_symbol_catalog(exchange)
+            catalog = get_symbol_catalog(exchange, symbol_catalog_cache)
         except Exception as exc:
             raise SystemExit(
                 f"Failed to load Tardis exchange metadata for {exchange}: {format_exception_message(exc)}"
             ) from exc
-        resolved_symbols = resolve_symbols(exchange, requested_symbols, catalog)
+        expanded_requested_symbols = expand_symbol_selectors(
+            exchange,
+            requested_symbols,
+            data_types,
+            symbol_catalog_cache,
+        )
+        resolved_symbols = resolve_symbols(exchange, expanded_requested_symbols, catalog)
         validate_data_types(exchange, resolved_symbols, data_types, catalog)
         resolved_symbols_by_exchange[exchange] = resolved_symbols
 

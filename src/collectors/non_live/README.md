@@ -123,6 +123,12 @@ Collect Tardis data by naming exchanges explicitly, for example `bybit` plus `hy
 .\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --data-types derivative_ticker --exchange-symbols "bybit=PERPETUALS;hyperliquid=PERPETUALS" --from-date 2025-10-01 --to-date 2026-02-28
 ```
 
+Collect Bitget symbols that intersect with Bybit for the requested data type:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.collectors.non_live.collect_tardis_monthly_csv --data-types quotes --exchange-symbols "bitget-futures=@intersect:bybit" --from-date 2025-10-01 --to-date 2025-10-01
+```
+
 Store temporary download files under a custom directory before upload:
 
 ```powershell
@@ -194,6 +200,7 @@ Latest processed outputs:
 - You can choose the target period with either `--month YYYY-MM`, `--year YYYY --month-number MM`, or `--from-date YYYY-MM-DD --to-date YYYY-MM-DD`.
 - `--to-date` is inclusive in date range mode.
 - You can choose exchanges explicitly with `--exchange-symbols exchange=symbol1,symbol2;exchange=symbol1`, for example `bybit=PERPETUALS;hyperliquid=PERPETUALS`.
+- `--exchange-symbols` also supports `@intersect:<exchange>`, for example `bitget-futures=@intersect:bybit`, which expands to the exact symbol ids shared by both exchanges and supported by the requested data type(s).
 - Legacy `--bitget-symbols` and `--hyperliquid-symbols` flags still work when `--exchange-symbols` is not provided.
 - `collect_tardis_monthly_csv` now uses only temporary local `.csv.gz` files during the run, converts them to `.parquet`, uploads the parquet files to R2, and removes the temp files.
 - Temporary Tardis download files now default to `data/raw/tardis/tardis_csv_r2_*`. Use `--temp-dir` when you want another temp location.
