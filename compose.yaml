@@ -9,7 +9,7 @@ services:
     environment:
       TARDIS_CONFIG: /app/config.yaml
       TARDIS_R2_CONFIG: /app/config.yaml
-      TARDIS_DATA_TYPES: quotes # derivative_ticker, trades, incremental_book_L2,quotes,book_snapshot_5,book_snapshot_25,liquidations
+      TARDIS_DATA_TYPES: incremental_book_L2 # derivative_ticker, trades, incremental_book_L2,quotes,book_snapshot_5,book_snapshot_25,liquidations
       TARDIS_MONTH: ""
       TARDIS_FROM_DATE: "2025-10-01"
       TARDIS_TO_DATE: "2026-02-28"
