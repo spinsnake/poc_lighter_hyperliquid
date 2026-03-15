@@ -630,12 +630,18 @@ def get_retry_status_code(exc: Exception) -> int | None:
 
 
 def should_retry_download(exc: Exception) -> bool:
+    # requests transport errors such as ChunkedEncodingError also inherit OSError.
+    if isinstance(exc, requests.RequestException):
+        status_code = get_retry_status_code(exc)
+        if status_code is not None:
+            return status_code not in {400, 401}
+        return True
     if isinstance(exc, OSError):
         return False
     status_code = get_retry_status_code(exc)
     if status_code is not None:
         return status_code not in {400, 401}
-    return isinstance(exc, requests.RequestException)
+    return False
 
 
 def next_retry_delay_seconds(exc: Exception, attempt: int) -> float:
