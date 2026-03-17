@@ -10,9 +10,9 @@ services:
       TARDIS_CONFIG: /app/config.yaml
       TARDIS_R2_CONFIG: /app/config.yaml
       TARDIS_DATA_TYPES: incremental_book_L2,book_snapshot_25,quotes # Bybit + Bitget futures, October 2025
-      TARDIS_MONTH: "2025-10"
-      TARDIS_FROM_DATE: ""
-      TARDIS_TO_DATE: ""
+      TARDIS_MONTH: ""
+      TARDIS_FROM_DATE: "2025-11-01"
+      TARDIS_TO_DATE: "2026-02-28"
       TARDIS_EXCHANGE_SYMBOLS: >-
         bybit=AAVEUSDT,ADAUSDT,APTUSDT,AVAXUSDT,BCHUSDT,BTCUSDT,DOGEUSDT,
         DOTUSDT,ETCUSDT,ETHUSDT,FILUSDT,LINKUSDT,LTCUSDT,MANAUSDT,NEARUSDT,
